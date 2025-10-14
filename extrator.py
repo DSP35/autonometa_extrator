@@ -158,13 +158,19 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
     with st.spinner("O Agente Gemini está interpretando o texto para extrair dados estruturados..."):
         try:
             # 2. Criando o Prompt de Extração de Texto
+            format_instructions = parser.get_format_instructions()
+            
+            full_human_prompt = (
+                "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
+                "Se o valor for um texto/string, use aspas. Para valores numéricos, use float.\n\n"
+                f"INSTRUÇÕES DE FORMATO:\n{format_instructions}\n\n"
+                f"TEXTO BRUTO DA NOTA: \n{text_to_analyze}"
+            )
+            
             prompt_template = ChatPromptTemplate.from_messages(
                 [
                     ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto fornecido de uma nota fiscal e extrair as informações solicitadas no formato JSON. Seja rigoroso com o formato e não invente dados."),
-                    ("human", [
-                        {"type": "text", "text": "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. Se o valor for um texto/string, use aspas. Para valores numéricos, use float. " + parser.get_format_instructions()},
-                        {"type": "text", "text": f"TEXTO BRUTO DA NOTA: \n{text_to_analyze}"},
-                    ]),
+                    ("human", full_human_prompt),
                 ]
             )
 
