@@ -1,4 +1,8 @@
 streamlit
 pillow
+pypdf 
+pdf2image
+pytesseract
 langchain
 langchain-google-genai
+pydantic
