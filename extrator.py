@@ -158,22 +158,25 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
     with st.spinner("O Agente Gemini está interpretando o texto para extrair dados estruturados..."):
         try:
             # 2. Criando o Prompt de Extração de Texto
+            
+            # 2a. Obtém as instruções de formato do Pydantic
             format_instructions = parser.get_format_instructions()
             
-            full_human_prompt = (
-                "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
-                "Se o valor for um texto/string, use aspas. Para valores numéricos, use float.\n\n"
-                f"INSTRUÇÕES DE FORMATO:\n{format_instructions}\n\n"
-                f"TEXTO BRUTO DA NOTA: \n{text_to_analyze}"
-            )
-            
+            # 2b. Constrói o template de prompt usando o formato de lista de mensagens
             prompt_template = ChatPromptTemplate.from_messages(
                 [
                     ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto fornecido de uma nota fiscal e extrair as informações solicitadas no formato JSON. Seja rigoroso com o formato e não invente dados."),
-                    ("human", full_human_prompt),
+                    # A mensagem 'human' é agora uma lista de strings e dicionários para garantir 
+                    # que todas as instruções e o texto da nota sejam tratados como conteúdo literal.
+                    ("human", [
+                        "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. Se o valor for um texto/string, use aspas. Para valores numéricos, use float.",
+                        "INSTRUÇÕES DE FORMATO:",
+                        format_instructions, # O conteúdo do parser é passado como um elemento literal
+                        "TEXTO BRUTO DA NOTA:",
+                        text_to_analyze,
+                    ]),
                 ]
             )
-
             # 3. Execução da Chain (LLM + Parser)
             chain = prompt_template | llm | parser
             extracted_data: NotaFiscal = chain.invoke({})
