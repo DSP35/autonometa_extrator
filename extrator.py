@@ -137,7 +137,7 @@ if uploaded_file is not None:
         if st.session_state.get("llm_ready", False):
             if st.button("🚀 Interpretar Dados Estruturados com o Agente Gemini", key="run_extraction_btn"):
                 st.session_state["run_llm_extraction"] = True
-                st.experimental_rerun()
+                st.rerun()
         else:
             st.warning("O Agente Gemini não está pronto. Corrija a API Key para interpretar.")
 
