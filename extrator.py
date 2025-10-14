@@ -157,31 +157,48 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
 
     with st.spinner("O Agente Gemini está interpretando o texto para extrair dados estruturados..."):
         try:
-            # 2. Criando o Prompt de Extração de Texto
-            
-            # 2a. Obtém as instruções de formato do Pydantic
-            format_instructions = parser.get_format_instructions()
-            
-            # 2b. Constrói o template de prompt usando o formato de lista de mensagens
+            # 2. Criando o Prompt de Extração de Texto com PromptTemplate simples
+
+            # 2a. Define o template com UMA variável de entrada (text_to_analyze)
+            # Todo o resto (instruções e sistema) é tratado como strings literais.
+            # Usamos o {format_instructions} e o {text_to_analyze} como placeholders.
+
             prompt_template = ChatPromptTemplate.from_messages(
                 [
                     ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto fornecido de uma nota fiscal e extrair as informações solicitadas no formato JSON. Seja rigoroso com o formato e não invente dados."),
-                    # A mensagem 'human' é agora uma lista de strings e dicionários para garantir 
-                    # que todas as instruções e o texto da nota sejam tratados como conteúdo literal.
-                    ("human", [
-                        "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. Se o valor for um texto/string, use aspas. Para valores numéricos, use float.",
-                        "INSTRUÇÕES DE FORMATO:",
-                        format_instructions, # O conteúdo do parser é passado como um elemento literal
-                        "TEXTO BRUTO DA NOTA:",
-                        text_to_analyze,
-                    ]),
+                    
+                    ("human", (
+                        "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
+                        "Se o valor for um texto/string, use aspas. Para valores numéricos, use float.\n\n"
+                        "INSTRUÇÕES DE FORMATO:\n"
+                        "{format_instructions}\n\n"
+                        "TEXTO BRUTO DA NOTA:\n"
+                        "{text_to_analyze}"
+                    )),
                 ]
             )
-            # 3. Execução da Chain (LLM + Parser)
-            chain = prompt_template | llm | parser
-            extracted_data: NotaFiscal = chain.invoke({})
 
-            # 4. Exibição dos Resultados
+            # 2b. Combinamos a saída do parser e o texto da nota com o template
+            # Esta é a etapa CRUCIAL: 'format_instructions' e 'text_to_analyze' são passados como variáveis
+            # A LangChain não tenta analisar o conteúdo interno do format_instructions.
+            
+            prompt_values = prompt_template.partial(
+                format_instructions=parser.get_format_instructions()
+            )
+            
+            final_prompt = prompt_values.format_messages(text_to_analyze=text_to_analyze)
+
+
+            # 3. Execução da Chain
+            # A chain agora é mais simples, pois o parser só precisa verificar a saída do LLM.
+            
+            response = llm.invoke(final_prompt)
+            
+            # Usamos o parser para garantir que a saída do LLM seja validada no Pydantic
+            extracted_data: NotaFiscal = parser.parse(response.content)
+
+
+            # 4. Exibição dos Resultados (o bloco try/except e o restante do código permanecem os mesmos)
             st.success("✅ Extração concluída com sucesso!")
             
             data_dict = extracted_data.model_dump()
