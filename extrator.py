@@ -6,9 +6,10 @@
 
 import streamlit as st
 from PIL import Image
-import pytesseract         # OCR
-from pdf2image import convert_from_bytes # Novo: Para converter PDF em Imagem
+import pytesseract 
+from pdf2image import convert_from_bytes 
 from io import BytesIO
+import json
 
 # --- Imports LangChain e Gemini ---
 from langchain_google_genai import ChatGoogleGenerativeAI
