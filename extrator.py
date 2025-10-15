@@ -24,7 +24,6 @@ class ItemNota(BaseModel):
     valor_total: float = Field(description="Valor total da linha do item.")
     codigo_cfop: str = Field(description="Código CFOP (Natureza da Operação) associado ao item, se disponível.")
     cst_csosn: str = Field(description="Código CST (Situação Tributária) ou CSOSN do item, se disponível.")
-    icms_valor: float = Field(description="Valor do ICMS incidido sobre o item, se disponível.")
 
 # Sub-estrutura para Emitente e Destinatário
 class ParteFiscal(BaseModel):
@@ -32,6 +31,15 @@ class ParteFiscal(BaseModel):
     nome_razao: str = Field(description="Nome ou Razão Social completa.")
     endereco_completo: str = Field(description="Endereço completo (Rua, Número, Bairro, Cidade, Estado).")
     inscricao_estadual: str = Field(description="Inscrição Estadual, se disponível.")
+
+# Sub-estrutura para os Totais de Impostos (Nível de Nota)
+class TotaisImposto(BaseModel):
+    base_calculo_icms: float = Field(description="Valor total da Base de Cálculo do ICMS da nota.")
+    valor_total_icms: float = Field(description="Valor total do ICMS destacado na nota.")
+    valor_total_ipi: float = Field(description="Valor total do IPI destacado na nota.")
+    valor_total_pis: float = Field(description="Valor total do PIS destacado na nota.")
+    valor_total_cofins: float = Field(description="Valor total do COFINS destacado na nota.")
+    valor_outras_despesas: float = Field(description="Valor total de outras despesas acessórias (frete, seguro, etc.).")
 
 # Estrutura Principal da Nota Fiscal
 class NotaFiscal(BaseModel):
@@ -46,6 +54,9 @@ class NotaFiscal(BaseModel):
     # Emitente e Destinatário
     emitente: ParteFiscal = Field(description="Dados completos do emitente (quem vendeu/prestou o serviço).")
     destinatario: ParteFiscal = Field(description="Dados completos do destinatário (quem comprou/recebeu o serviço).")
+
+    # TOTAIS DE IMPOSTOS
+    totais_impostos: TotaisImposto = Field(description="Valores totais de impostos e despesas acessórias da nota.")
     
     # Itens/Serviços (Lista)
     itens: list[ItemNota] = Field(description="Lista completa de todos os produtos ou serviços discriminados na nota, seguindo o esquema ItemNota.")
@@ -187,12 +198,13 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             # 2. Criando o Prompt de Extração de Texto com PromptTemplate robusto
             prompt_template = ChatPromptTemplate.from_messages(
                 [
-                    ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto fornecido de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. ATENÇÃO ESPECIAL: Você deve extrair todas as listas e sub-objetos (EMITENTE, DESTINATÁRIO, e a LISTA DE ITENS) de forma completa e exata. Não invente dados."),
+                    ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. ATENÇÃO ESPECIAL: Você deve extrair todas as listas e sub-objetos, **incluindo todos os totais de impostos** (`TotaisImposto`), de forma completa e exata. Converta todos os valores monetários e numéricos para float. Não invente dados."),
                     
                     ("human", (
                         "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
+                        "**PRIORIZE a extração dos totais de impostos (ICMS, IPI, PIS, COFINS)**. "
                         "Converta todos os valores de impostos, totais e quantidades para o tipo float. "
-                        "Forneça a lista completa de itens, mesmo que confusa. \n\n"
+                        "Forneça a lista completa de itens. \n\n"
                         "INSTRUÇÕES DE FORMATO:\n"
                         "{format_instructions}\n\n"
                         "TEXTO BRUTO DA NOTA:\n"
@@ -231,7 +243,30 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             
             col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
             col_chave.code(data_dict['chave_acesso'])
-
+            
+            st.markdown("---")
+            st.subheader("💰 Totais de Impostos e Despesas")
+            
+            # Extrai o dicionário de impostos
+            impostos_data = data_dict.get('totais_impostos', {})
+            
+            col_icms, col_ipi, col_pis, col_cofins, col_outras = st.columns(5)
+            
+            # Função auxiliar para formatar moeda e lidar com None/0
+            def formatar_moeda_imp(valor):
+                if valor is None or valor == 0.0:
+                    return "R$ 0,00"
+                return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            
+            col_icms.metric("Base ICMS", formatar_moeda_imp(impostos_data.get('base_calculo_icms')))
+            col_icms.metric("Total ICMS", formatar_moeda_imp(impostos_data.get('valor_total_icms')))
+            
+            col_ipi.metric("Total IPI", formatar_moeda_imp(impostos_data.get('valor_total_ipi')))
+            
+            col_pis.metric("Total PIS", formatar_moeda_imp(impostos_data.get('valor_total_pis')))
+            col_cofins.metric("Total COFINS", formatar_moeda_imp(impostos_data.get('valor_total_cofins')))
+            
+            col_outras.metric("Outras Despesas", formatar_moeda_imp(impostos_data.get('valor_outras_despesas')))
 
             # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
             st.markdown("---")
