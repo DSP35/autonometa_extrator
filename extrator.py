@@ -75,6 +75,8 @@ def extract_text_from_file(uploaded_file):
     file_type = uploaded_file.type
     uploaded_file.seek(0)
     
+    tesseract_config = '--psm 4' 
+    
     # 1. Se for PDF
     if "pdf" in file_type:
         st.info("Arquivo PDF detectado. Convertendo primeira página para imagem e extraindo texto...")
@@ -84,9 +86,9 @@ def extract_text_from_file(uploaded_file):
             if not images:
                 return "ERRO_CONVERSAO: Não foi possível converter o PDF em imagem."
             
-            # Executa OCR na imagem convertida (primeira página) com config de texto
-            text = pytesseract.image_to_string(images[0], lang='por', config='--psm 6') 
-            st.session_state["image_to_display"] = images[0] # Salva a imagem para visualização
+            # Executa OCR na imagem convertida com o novo PSM
+            text = pytesseract.image_to_string(images[0], lang='por', config=tesseract_config) 
+            st.session_state["image_to_display"] = images[0]
             return text
             
         except Exception as e:
@@ -97,9 +99,9 @@ def extract_text_from_file(uploaded_file):
         st.info("Arquivo de Imagem detectado. Extraindo texto...")
         try:
             img = Image.open(uploaded_file)
-            # Executa OCR diretamente na imagem com config de texto
-            text = pytesseract.image_to_string(img, lang='por', config='--psm 6')
-            st.session_state["image_to_display"] = img # Salva a imagem para visualização
+            # Executa OCR diretamente na imagem com o novo PSM
+            text = pytesseract.image_to_string(img, lang='por', config=tesseract_config)
+            st.session_state["image_to_display"] = img
             return text
         except pytesseract.TesseractNotFoundError:
             return "ERRO_IMAGEM: O Tesseract não está instalado corretamente via packages.txt."
