@@ -311,7 +311,7 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
                         "icms_valor": st.column_config.NumberColumn("ICMS", format="R$ %.2f")
                     },
                     hide_index=True,
-                    use_container_width=True
+                    width='stretch'
                 )
             else:
                 st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
