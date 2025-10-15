@@ -65,6 +65,47 @@ class NotaFiscal(BaseModel):
     # Itens/Serviços (Lista)
     itens: list[ItemNota] = Field(description="Lista completa de todos os produtos ou serviços discriminados na nota, seguindo o esquema ItemNota.")
 
+def check_for_missing_data(data_dict: dict) -> list:
+    """Verifica se há dados críticos faltantes ou zerados e retorna uma lista de avisos."""
+    warnings = []
+    
+    # 1. Campos principais obrigatórios (Strings)
+    critical_str_fields = {
+        'Chave de Acesso': data_dict.get('chave_acesso', ''),
+        'Data de Emissão': data_dict.get('data_emissao', ''),
+    }
+    
+    # 2. Checagem de Emitente/Destinatário
+    emitente = data_dict.get('emitente', {})
+    destinatario = data_dict.get('destinatario', {})
+
+    critical_str_fields['CNPJ/CPF do Emitente'] = emitente.get('cnpj_cpf', '')
+    critical_fields_emitente = {
+        'Nome/Razão do Emitente': emitente.get('nome_razao', '')
+    }
+    
+    critical_str_fields['CNPJ/CPF do Destinatário'] = destinatario.get('cnpj_cpf', '')
+    critical_fields_destinatario = {
+        'Nome/Razão do Destinatário': destinatario.get('nome_razao', '')
+    }
+
+    # Checa campos strings ausentes/zerados
+    all_str_fields = {**critical_str_fields, **critical_fields_emitente, **critical_fields_destinatario}
+    for name, value in all_str_fields.items():
+        # Considera 'vazio' se for string vazia, None, ou '0'/'0.0'
+        if not value or value.strip() == '0' or value.strip() == '0.0':
+            warnings.append(f"❌ O campo '{name}' está vazio ou ilegível.")
+
+    # 3. Checagem de Valores (Floats)
+    valor_total_nota = data_dict.get('valor_total_nota', 0.0)
+    if valor_total_nota <= 0.0:
+        warnings.append("❌ O 'Valor Total da Nota' está zerado (R$ 0,00).")
+    
+    # 4. Checagem da lista de itens
+    if not data_dict.get('itens'):
+        warnings.append("❌ A lista de Itens/Produtos está vazia.")
+    
+    return warnings
 
 # --- Função Central de OCR (Lida com Imagem e PDF) ---
 def extract_text_from_file(uploaded_file):
@@ -242,7 +283,16 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             
             # Converte o Pydantic object para um dicionário Python simples
             data_dict = extracted_data.model_dump()
+
+            # Valiação da qualiiade e conteúdo da digitalização da NF
+            quality_warnings = check_for_missing_data(data_dict)
             
+            if quality_warnings:
+                st.warning("⚠️ Atenção: Diversas informações críticas estão faltando ou ilegíveis na nota fiscal. Isso geralmente ocorre devido à má qualidade da digitalização ou campos não preenchidos.")
+                with st.expander("Clique para ver os campos faltantes ou zerados"):
+                    for warning in quality_warnings:
+                        st.markdown(warning)
+                        
             st.subheader("Informações Principais")
             
             # --- 4.1 Cabeçalho da Nota com st.columns e st.metric ---
