@@ -17,15 +17,40 @@ from langchain.prompts import ChatPromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 
+# --- 1. Definindo o Schema de Saída (Estrutura da Nota Fiscal) ---
+# Sub-estrutura para cada Item da Nota
+class ItemNota(BaseModel):
+    descricao: str = Field(description="Nome ou descrição completa do produto/serviço.")
+    quantidade: float = Field(description="Quantidade do item, convertida para um valor numérico (float).")
+    valor_unitario: float = Field(description="Valor unitário do item.")
+    valor_total: float = Field(description="Valor total da linha do item.")
+    codigo_cfop: str = Field(description="Código CFOP (Natureza da Operação) associado ao item, se disponível.")
+    cst_csosn: str = Field(description="Código CST (Situação Tributária) ou CSOSN do item, se disponível.")
+    icms_valor: float = Field(description="Valor do ICMS incidido sobre o item, se disponível.")
 
-# --- 1. Definindo o Schema de Saída ---
+# Sub-estrutura para Emitente e Destinatário
+class ParteFiscal(BaseModel):
+    cnpj_cpf: str = Field(description="CNPJ ou CPF da parte fiscal (apenas dígitos).")
+    nome_razao: str = Field(description="Nome ou Razão Social completa.")
+    endereco_completo: str = Field(description="Endereço completo (Rua, Número, Bairro, Cidade, Estado).")
+    inscricao_estadual: str = Field(description="Inscrição Estadual, se disponível.")
+
+# Estrutura Principal da Nota Fiscal
 class NotaFiscal(BaseModel):
-    """Estrutura Padrão dos Dados de uma Nota Fiscal."""
-    cnpj_emitente: str = Field(description="CNPJ da empresa que emitiu a nota fiscal (apenas dígitos).")
-    nome_emitente: str = Field(description="Nome ou razão social do emitente da nota fiscal.")
+    """Estrutura Padrão e Completa dos Dados de uma Nota Fiscal."""
+    
+    # Dados Gerais
+    chave_acesso: str = Field(description="Chave de Acesso da NF-e (44 dígitos), se presente.")
+    modelo_documento: str = Field(description="Modelo do documento fiscal (Ex: NF-e, NFS-e, Cupom).")
     data_emissao: str = Field(description="Data de emissão da nota fiscal no formato YYYY-MM-DD.")
-    valor_total: float = Field(description="Valor total da nota fiscal.")
-    itens_servicos: list[str] = Field(description="Lista com a descrição dos principais produtos ou serviços na nota. Retorne no máximo 3 itens.")
+    valor_total_nota: float = Field(description="Valor total FINAL da nota fiscal (somatório de tudo).")
+    
+    # Emitente e Destinatário
+    emitente: ParteFiscal = Field(description="Dados completos do emitente (quem vendeu/prestou o serviço).")
+    destinatario: ParteFiscal = Field(description="Dados completos do destinatário (quem comprou/recebeu o serviço).")
+    
+    # Itens/Serviços (Lista)
+    itens: list[ItemNota] = Field(description="Lista completa de todos os produtos ou serviços discriminados na nota, seguindo o esquema ItemNota.")
 
 # --- Função Central de OCR (Lida com Imagem e PDF) ---
 def extract_text_from_file(uploaded_file):
@@ -166,11 +191,13 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
 
             prompt_template = ChatPromptTemplate.from_messages(
                 [
-                    ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto fornecido de uma nota fiscal e extrair as informações solicitadas no formato JSON. Seja rigoroso com o formato e não invente dados."),
+                    # REFORÇANDO A INSTRUÇÃO DE SISTEMA:
+                    ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto fornecido de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. ATENÇÃO ESPECIAL: Você deve extrair todas as listas e sub-objetos (EMITENTE, DESTINATÁRIO, e a LISTA DE ITENS) de forma completa e exata. Não invente dados."),
                     
                     ("human", (
                         "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
-                        "Se o valor for um texto/string, use aspas. Para valores numéricos, use float.\n\n"
+                        "Converta todos os valores de impostos, totais e quantidades para o tipo float. "
+                        "Forneça a lista completa de itens, mesmo que confusa. \n\n"
                         "INSTRUÇÕES DE FORMATO:\n"
                         "{format_instructions}\n\n"
                         "TEXTO BRUTO DA NOTA:\n"
