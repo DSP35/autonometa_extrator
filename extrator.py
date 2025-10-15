@@ -1,23 +1,21 @@
-### Autonometa
-### Extator de dados de Notas Fiscais
-### Desenvolvido por David Parede
-
 # extrator.py
 
 import streamlit as st
 from PIL import Image
-import pytesseract 
-from pdf2image import convert_from_bytes 
+import pytesseract         # OCR
+from pdf2image import convert_from_bytes
 from io import BytesIO
-import json
+import json                # NECESSÁRIO para st.download_button e JSON dumps
 
 # --- Imports LangChain e Gemini ---
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
+import os
 
 # --- 1. Definindo o Schema de Saída (Estrutura da Nota Fiscal) ---
+
 # Sub-estrutura para cada Item da Nota
 class ItemNota(BaseModel):
     descricao: str = Field(description="Nome ou descrição completa do produto/serviço.")
@@ -52,6 +50,7 @@ class NotaFiscal(BaseModel):
     # Itens/Serviços (Lista)
     itens: list[ItemNota] = Field(description="Lista completa de todos os produtos ou serviços discriminados na nota, seguindo o esquema ItemNota.")
 
+
 # --- Função Central de OCR (Lida com Imagem e PDF) ---
 def extract_text_from_file(uploaded_file):
     """
@@ -70,8 +69,8 @@ def extract_text_from_file(uploaded_file):
             if not images:
                 return "ERRO_CONVERSAO: Não foi possível converter o PDF em imagem."
             
-            # Executa OCR na imagem convertida (primeira página)
-            text = pytesseract.image_to_string(images[0], lang='por') 
+            # Executa OCR na imagem convertida (primeira página) com config de texto
+            text = pytesseract.image_to_string(images[0], lang='por', config='--psm 6') 
             st.session_state["image_to_display"] = images[0] # Salva a imagem para visualização
             return text
             
@@ -83,12 +82,14 @@ def extract_text_from_file(uploaded_file):
         st.info("Arquivo de Imagem detectado. Extraindo texto...")
         try:
             img = Image.open(uploaded_file)
-            # Executa OCR diretamente na imagem
-            text = pytesseract.image_to_string(img, lang='por')
+            # Executa OCR diretamente na imagem com config de texto
+            text = pytesseract.image_to_string(img, lang='por', config='--psm 6')
             st.session_state["image_to_display"] = img # Salva a imagem para visualização
             return text
+        except pytesseract.TesseractNotFoundError:
+            return "ERRO_IMAGEM: O Tesseract não está instalado corretamente via packages.txt."
         except Exception as e:
-            return f"ERRO_IMAGEM: Verifique se 'tesseract-ocr' está instalado via packages.txt. Detalhes: {e}"
+            return f"ERRO_IMAGEM: Falha na extração da imagem. Detalhes: {e}"
             
     return "ERRO_TIPO_INVALIDO: Tipo de arquivo não suportado."
 
@@ -144,7 +145,7 @@ if uploaded_file is not None:
     with col1:
         # Exibe a imagem (ou a imagem da primeira página do PDF)
         if "image_to_display" in st.session_state:
-             st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", width='stretch')
+             st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", use_container_width=True) # use_container_width CORRIGIDO
 
     with col2:
         if "ERRO" in ocr_text:
@@ -163,7 +164,7 @@ if uploaded_file is not None:
         if st.session_state.get("llm_ready", False):
             if st.button("🚀 Interpretar Dados Estruturados com o Agente Gemini", key="run_extraction_btn"):
                 st.session_state["run_llm_extraction"] = True
-                st.rerun()
+                st.rerun() # CORRIGIDO: st.experimental_rerun() -> st.rerun()
         else:
             st.warning("O Agente Gemini não está pronto. Corrija a API Key para interpretar.")
 
@@ -172,26 +173,20 @@ if uploaded_file is not None:
 if st.session_state.get("run_llm_extraction", False) and st.session_state.get("llm_ready", False):
     
     st.session_state["run_llm_extraction"] = False 
-    st.subheader("Análise e Extração Estruturada de Dados 🧠")
     
-    # 1. Recupera o texto bruto do OCR
+    # 1. Recupera o texto bruto do OCR e a resposta bruta do LLM
     text_to_analyze = st.session_state.get("ocr_text", "")
-
+    response = None # Inicializa 'response' para uso no bloco except
+    
     if not text_to_analyze or "ERRO" in text_to_analyze:
         st.error("Não há texto válido para enviar ao Agente LLM.")
         st.stop()
 
     with st.spinner("O Agente Gemini está interpretando o texto para extrair dados estruturados..."):
         try:
-            # 2. Criando o Prompt de Extração de Texto com PromptTemplate simples
-
-            # 2a. Define o template com UMA variável de entrada (text_to_analyze)
-            # Todo o resto (instruções e sistema) é tratado como strings literais.
-            # Usamos o {format_instructions} e o {text_to_analyze} como placeholders.
-
+            # 2. Criando o Prompt de Extração de Texto com PromptTemplate robusto
             prompt_template = ChatPromptTemplate.from_messages(
                 [
-                    # REFORÇANDO A INSTRUÇÃO DE SISTEMA:
                     ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto fornecido de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. ATENÇÃO ESPECIAL: Você deve extrair todas as listas e sub-objetos (EMITENTE, DESTINATÁRIO, e a LISTA DE ITENS) de forma completa e exata. Não invente dados."),
                     
                     ("human", (
@@ -206,27 +201,18 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
                 ]
             )
 
-            # 2b. Combinamos a saída do parser e o texto da nota com o template
-            # Esta é a etapa CRUCIAL: 'format_instructions' e 'text_to_analyze' são passados como variáveis
-            # A LangChain não tenta analisar o conteúdo interno do format_instructions.
-            
+            # 2b. Preenche o template com as instruções do parser (CRUCIAL para evitar erro de variáveis)
             prompt_values = prompt_template.partial(
                 format_instructions=parser.get_format_instructions()
             )
             
             final_prompt = prompt_values.format_messages(text_to_analyze=text_to_analyze)
 
+            # 3. Execução do LLM e Parsin'
+            response = llm.invoke(final_prompt) # Armazena a resposta bruta
+            extracted_data: NotaFiscal = parser.parse(response.content) # Tenta o parsing no Pydantic
 
-            # 3. Execução da Chain
-            # A chain agora é mais simples, pois o parser só precisa verificar a saída do LLM.
-            
-            response = llm.invoke(final_prompt)
-            
-            # Usamos o parser para garantir que a saída do LLM seja validada no Pydantic
-            extracted_data: NotaFiscal = parser.parse(response.content)
-
-
-            # 4. Exibição dos Resultados (o bloco try/except e o restante do código permanecem os mesmos)
+            # 4. Exibição dos Resultados
             st.success("✅ Extração concluída com sucesso!")
             
             # Converte o Pydantic object para um dicionário Python simples
@@ -248,36 +234,26 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
 
 
             # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
-            
             st.markdown("---")
             
-            # Emitente
             with st.expander("🏢 Detalhes do Emitente", expanded=False):
-                emitente_data = data_dict['emitente']
-                st.json(emitente_data) # Exibimos em JSON, que é nativamente expansível
+                emitente_data = data_dict.get('emitente', {})
+                st.json(emitente_data)
 
-            # Destinatário
             with st.expander("👤 Detalhes do Destinatário", expanded=False):
-                destinatario_data = data_dict['destinatario']
+                destinatario_data = data_dict.get('destinatario', {})
                 st.json(destinatario_data)
 
 
-            # --- 4.3 Tabela de Itens (O MAIS IMPORTANTE) ---
+            # --- 4.3 Tabela de Itens ---
             st.subheader("🛒 Itens da Nota Fiscal")
             
-            itens_list = data_dict['itens']
+            itens_list = data_dict.get('itens', [])
             
             if itens_list:
-                # O Pydantic já nos dá uma lista de dicionários pronta para o DataFrame
-                # Removemos o campo 'valor_unitario' do display, se necessário, ou renomeamos.
-                
-                # Criando um DataFrame customizado com as colunas na ordem certa
-                itens_df = st.dataframe(
+                st.dataframe(
                     itens_list,
-                    column_order=[
-                        "descricao", "quantidade", "valor_unitario", "valor_total", 
-                        "codigo_cfop", "cst_csosn", "icms_valor"
-                    ],
+                    column_order=["descricao", "quantidade", "valor_unitario", "valor_total", "codigo_cfop", "cst_csosn", "icms_valor"],
                     column_config={
                         "descricao": st.column_config.Column("Descrição do Item", width="large"),
                         "quantidade": st.column_config.NumberColumn("Qtde"),
@@ -294,22 +270,36 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
                 st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
 
 
-            # Adicionar a funcionalidade de Download (Usamos o JSON da data_dict completa)
+            # --- 4.4 Botão de Download (CORRIGIDO: Referência do nome do emitente) ---
             st.markdown("---")
+            
+            # CORREÇÃO: Tenta pegar o nome_razao, se falhar, usa "extraida"
+            try:
+                nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
+            except (KeyError, IndexError, TypeError):
+                nome_curto = "extraida"
+
             json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
             st.download_button(
                 label="⬇️ Baixar JSON COMPLETO da Extração",
                 data=json_data,
-                file_name=f"nf_{data_dict['data_emissao']}_{data_dict['nome_emitente'].split(' ')[0]}.json",
+                file_name=f"nf_{data_dict['data_emissao']}_{nome_curto}.json",
                 mime="application/json"
             )
 
             with st.expander("Ver JSON Bruto Completo", expanded=False):
                  st.json(data_dict)
 
+
         except Exception as e:
+            # --- TRATAMENTO DE ERRO MELHORADO ---
             st.error(f"Houve um erro durante a interpretação pelo Gemini. Detalhes: {e}")
-            st.warning("O Agente LLM pode ter falhado ao extrair a estrutura JSON a partir do texto OCR.")
             
+            # Se a falha foi no Pydantic, exibe a resposta bruta do LLM para debug
+            if response is not None:
+                with st.expander("Ver Resposta Bruta do LLM (JSON malformado)", expanded=True):
+                    st.code(response.content, language='json')
+            
+            st.warning("O Agente LLM pode ter falhado ao extrair a estrutura JSON a partir do texto OCR.")
 
 st.markdown("---")
