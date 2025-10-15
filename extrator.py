@@ -171,7 +171,9 @@ if uploaded_file is not None:
             # Limita a visualização para não poluir a tela
             display_text = ocr_text[:1000] + "..." if len(ocr_text) > 1000 else ocr_text
             st.code(display_text, language="text")
-
+            
+    with st.expander("🔎 Ver Texto Bruto COMPLETO da Nota Fiscal (DEBUG)"):
+    st.code(ocr_text, language="text") # Mostra o texto completo, sem limite de 1000 caracteres
     st.markdown("---")
 
     # 3. Próxima Etapa: Botão de Interpretação LLM
@@ -202,13 +204,17 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             # 2. Criando o Prompt de Extração de Texto com PromptTemplate robusto
             prompt_template = ChatPromptTemplate.from_messages(
                 [
-                    ("system", "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. ATENÇÃO ESPECIAL: Você deve extrair todas as listas e sub-objetos, **incluindo todos os totais de impostos** (`TotaisImposto`), de forma completa e exata. Converta todos os valores monetários e numéricos para float. Não invente dados."),
+                    ("system", 
+                        "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. "
+                        "ATENÇÃO CRÍTICA: Ao extrair a lista de ITENS (`itens`), **UTILIZE EXCLUSIVAMENTE OS DADOS ENCONTRADOS NA TABELA PRINCIPAL DE PRODUTOS/SERVIÇOS**. "
+                        "Ignore qualquer menção de itens em seções de 'Informações Complementares' ou 'Dados Adicionais' que não possuam colunas fiscais completas (CFOP, valores, etc.). "
+                        "Você deve extrair todos os sub-objetos (impostos, emitente, destinatário) de forma completa e exata. Converta todos os valores para float. Não invente dados."
+                    ),
                     
                     ("human", (
                         "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
                         "**PRIORIZE a extração dos totais de impostos (ICMS, IPI, PIS, COFINS)**. "
-                        "Converta todos os valores de impostos, totais e quantidades para o tipo float. "
-                        "Forneça a lista completa de itens. \n\n"
+                        "Obrigatório: extraia a lista de itens APENAS DA TABELA PRINCIPAL.\n\n"
                         "INSTRUÇÕES DE FORMATO:\n"
                         "{format_instructions}\n\n"
                         "TEXTO BRUTO DA NOTA:\n"
@@ -282,7 +288,6 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             with st.expander("👤 Detalhes do Destinatário", expanded=False):
                 destinatario_data = data_dict.get('destinatario', {})
                 st.json(destinatario_data)
-
 
             # --- 4.3 Tabela de Itens ---
             st.subheader("🛒 Itens da Nota Fiscal")
