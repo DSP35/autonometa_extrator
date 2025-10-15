@@ -28,7 +28,11 @@ class ItemNota(BaseModel):
 # Sub-estrutura para Emitente e Destinatário
 class ParteFiscal(BaseModel):
     cnpj_cpf: str = Field(description="CNPJ ou CPF da parte fiscal (apenas dígitos).")
-    nome_razao: str = Field(description="Nome ou Razão Social completa.")
+    # CORREÇÃO CRÍTICA: Adiciona alias 'nome_raza' para aceitar o erro comum do LLM
+    nome_razao: str = Field(
+        description="Nome ou Razão Social completa.",
+        validation_alias='nome_raza' # Aceita 'nome_raza' na entrada JSON
+    )
     endereco_completo: str = Field(description="Endereço completo (Rua, Número, Bairro, Cidade, Estado).")
     inscricao_estadual: str = Field(description="Inscrição Estadual, se disponível.")
 
