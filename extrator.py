@@ -173,7 +173,8 @@ if uploaded_file is not None:
             st.code(display_text, language="text")
             
     with st.expander("🔎 Ver Texto Bruto COMPLETO da Nota Fiscal (DEBUG)"):
-    st.code(ocr_text, language="text") # Mostra o texto completo, sem limite de 1000 caracteres
+        st.code(ocr_text, language="text") # Mostra o texto completo, sem limite de 1000 caracteres
+        
     st.markdown("---")
 
     # 3. Próxima Etapa: Botão de Interpretação LLM
