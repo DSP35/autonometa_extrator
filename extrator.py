@@ -145,7 +145,7 @@ if uploaded_file is not None:
     with col1:
         # Exibe a imagem (ou a imagem da primeira página do PDF)
         if "image_to_display" in st.session_state:
-             st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", width='stretch)
+             st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", width='stretch')
 
     with col2:
         if "ERRO" in ocr_text:
