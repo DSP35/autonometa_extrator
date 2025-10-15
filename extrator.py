@@ -229,26 +229,82 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             # 4. Exibição dos Resultados (o bloco try/except e o restante do código permanecem os mesmos)
             st.success("✅ Extração concluída com sucesso!")
             
+            # Converte o Pydantic object para um dicionário Python simples
             data_dict = extracted_data.model_dump()
             
-            st.dataframe(
-                data={
-                    "Campo": list(data_dict.keys()),
-                    "Valor Extraído": list(data_dict.values())
-                },
-                use_container_width=True
-            )
+            st.subheader("Informações Principais")
             
-            # Adicionar a funcionalidade de Download (Próxima etapa)
+            # --- 4.1 Cabeçalho da Nota com st.columns e st.metric ---
+            col_data, col_valor, col_modelo, col_chave = st.columns(4)
+            
+            col_data.metric("Data de Emissão", data_dict['data_emissao'])
+            
+            # Formatando valor_total_nota para moeda brasileira
+            valor_formatado = f"R$ {data_dict['valor_total_nota']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            col_valor.metric("Valor Total da Nota", valor_formatado)
+            
+            col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
+            col_chave.code(data_dict['chave_acesso'])
+
+
+            # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
+            
+            st.markdown("---")
+            
+            # Emitente
+            with st.expander("🏢 Detalhes do Emitente", expanded=False):
+                emitente_data = data_dict['emitente']
+                st.json(emitente_data) # Exibimos em JSON, que é nativamente expansível
+
+            # Destinatário
+            with st.expander("👤 Detalhes do Destinatário", expanded=False):
+                destinatario_data = data_dict['destinatario']
+                st.json(destinatario_data)
+
+
+            # --- 4.3 Tabela de Itens (O MAIS IMPORTANTE) ---
+            st.subheader("🛒 Itens da Nota Fiscal")
+            
+            itens_list = data_dict['itens']
+            
+            if itens_list:
+                # O Pydantic já nos dá uma lista de dicionários pronta para o DataFrame
+                # Removemos o campo 'valor_unitario' do display, se necessário, ou renomeamos.
+                
+                # Criando um DataFrame customizado com as colunas na ordem certa
+                itens_df = st.dataframe(
+                    itens_list,
+                    column_order=[
+                        "descricao", "quantidade", "valor_unitario", "valor_total", 
+                        "codigo_cfop", "cst_csosn", "icms_valor"
+                    ],
+                    column_config={
+                        "descricao": st.column_config.Column("Descrição do Item", width="large"),
+                        "quantidade": st.column_config.NumberColumn("Qtde"),
+                        "valor_unitario": st.column_config.NumberColumn("Valor Unit.", format="R$ %.2f"),
+                        "valor_total": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
+                        "codigo_cfop": st.column_config.Column("CFOP"),
+                        "cst_csosn": st.column_config.Column("CST/CSOSN"),
+                        "icms_valor": st.column_config.NumberColumn("ICMS", format="R$ %.2f")
+                    },
+                    hide_index=True,
+                    use_container_width=True
+                )
+            else:
+                st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
+
+
+            # Adicionar a funcionalidade de Download (Usamos o JSON da data_dict completa)
+            st.markdown("---")
             json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
             st.download_button(
-                label="⬇️ Baixar JSON da Extração",
+                label="⬇️ Baixar JSON COMPLETO da Extração",
                 data=json_data,
-                file_name="nota_fiscal_extraida.json",
+                file_name=f"nf_{data_dict['data_emissao']}_{data_dict['nome_emitente'].split(' ')[0]}.json",
                 mime="application/json"
             )
 
-            with st.expander("Ver JSON Bruto"):
+            with st.expander("Ver JSON Bruto Completo", expanded=False):
                  st.json(data_dict)
 
         except Exception as e:
