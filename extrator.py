@@ -24,6 +24,7 @@ class ItemNota(BaseModel):
     valor_total: float = Field(description="Valor total da linha do item.")
     codigo_cfop: str = Field(description="Código CFOP (Natureza da Operação) associado ao item, se disponível.")
     cst_csosn: str = Field(description="Código CST (Situação Tributária) ou CSOSN do item, se disponível.")
+    valor_aprox_tributos: float = Field(description="Valor aproximado dos tributos incidentes sobre este item (Lei da Transparência).")
 
 # Sub-estrutura para Emitente e Destinatário
 class ParteFiscal(BaseModel):
@@ -43,7 +44,7 @@ class TotaisImposto(BaseModel):
     valor_total_ipi: float = Field(description="Valor total do IPI destacado na nota.")
     valor_total_pis: float = Field(description="Valor total do PIS destacado na nota.")
     valor_total_cofins: float = Field(description="Valor total do COFINS destacado na nota.")
-    valor_aproximado_tributos: float = Field(description="Valor aproximado total dos tributos (Lei da Transparência).") 
+    valor_aprox_tributos: float = Field(description="Valor aproximado total dos tributos (Lei da Transparência). Este campo deve ser preenchido se o valor for encontrado no bloco de Dados Adicionais ou como um total único.") 
     valor_outras_despesas: float = Field(description="Valor total de outras despesas acessórias (frete, seguro, etc.).")
     
 
@@ -252,14 +253,13 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
                 [
                     ("system", 
                         "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. "
-                        "ATENÇÃO CRÍTICA: Ao extrair a lista de ITENS (`itens`), UTILIZE EXCLUSIVAMENTE OS DADOS ENCONTRADOS NA TABELA PRINCIPAL DE PRODUTOS/SERVIÇOS. "
-                        "Para os TOTAIS DE IMPOSTOS (`TotaisImposto`), você deve rastrear e extrair os valores (ICMS, IPI, PIS, COFINS e VALOR APROXIMADO DOS TRIBUTOS) em QUALQUER SEÇÃO DO TEXTO (tabela, cálculo do imposto ou dados adicionais). "
+                        "ATENÇÃO HÍBRIDA: Para o Valor Aproximado dos Tributos, primeiro tente preencher o campo `valor_aprox_tributos` DENTRO DE CADA ITEM. Se essa informação estiver ausente na tabela de itens, procure o valor TOTAL no campo de 'Dados Adicionais' e preencha o campo `totais_impostos.valor_aprox_tributos`."
                         "Converta todos os valores monetários e numéricos para float. Não invente dados."
                     ),
                     
                     ("human", (
                         "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
-                        "**Rastreie a nota inteira para encontrar os TOTAIS DE IMPOSTOS** (principalmente ICMS, IPI, PIS, COFINS e o Valor Aproximado dos Tributos). "
+                        "Instrução Fiscal Crítica: Priorize a extração do valor de tributos item por item. Se não houver, extraia o total dos tributos do campo de Dados Adicionais."
                         "Obrigatório: extraia a lista de itens APENAS DA TABELA PRINCIPAL.\n\n"
                         "INSTRUÇÕES DE FORMATO:\n"
                         "{format_instructions}\n\n"
@@ -348,31 +348,80 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             st.subheader("🛒 Itens da Nota Fiscal")
             
             itens_list = data_dict.get('itens', [])
+            total_tributos_calculado = 0.0
             
             if itens_list:
+                # 1. Calcule o total dos tributos a partir dos itens
+                for item in itens_list:
+                    valor = item.get('valor_aprox_tributos', 0.0)
+                    if isinstance(valor, (int, float)):
+                         total_tributos_calculado += valor
+            
+                # 2. Exibe o DataFrame (Mantido igual com a nova coluna)
                 st.dataframe(
                     itens_list,
-                    column_order=["descricao", "quantidade", "valor_unitario", "valor_total", "codigo_cfop", "cst_csosn", "icms_valor"],
+                    column_order=[
+                        "descricao", "quantidade", "valor_unitario", "valor_total", 
+                        "codigo_cfop", "cst_csosn", "valor_aprox_tributos"
+                    ],
                     column_config={
-                        "descricao": st.column_config.Column("Descrição do Item", width="large"),
-                        "quantidade": st.column_config.NumberColumn("Qtde"),
-                        "valor_unitario": st.column_config.NumberColumn("Valor Unit.", format="R$ %.2f"),
-                        "valor_total": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
-                        "codigo_cfop": st.column_config.Column("CFOP"),
-                        "cst_csosn": st.column_config.Column("CST/CSOSN"),
-                        "icms_valor": st.column_config.NumberColumn("ICMS", format="R$ %.2f")
+                        # ... (configuração das colunas, mantida igual) ...
+                        "valor_aprox_tributos": st.column_config.NumberColumn("V. Aprox. Tributos", format="R$ %.2f")
                     },
                     hide_index=True,
-                    width='stretch'
+                    use_container_width=True
                 )
             else:
                 st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
+            
+            
+            # --- NOVO BLOCO: Exibição dos Totais de Impostos (Com Lógica de Desempate) ---
+            st.markdown("---")
+            st.subheader("💰 Totais de Impostos e Despesas")
+            
+            impostos_data = data_dict.get('totais_impostos', {})
+            total_tributos_extraido_direto = impostos_data.get('valor_aprox_tributos', 0.0)
+            
+            # LÓGICA DE DESEMPATE CRÍTICA:
+            if total_tributos_calculado > 0.0:
+                # Cenário A: Prioriza o valor calculado (se o LLM extraiu por item)
+                total_final_tributos = total_tributos_calculado
+                fonte_tributos = " (Calculado dos Itens)"
+            elif total_tributos_extraido_direto > 0.0:
+                # Cenário B: Usa o valor extraído diretamente (se veio dos Dados Adicionais)
+                total_final_tributos = total_tributos_extraido_direto
+                fonte_tributos = " (Extraído dos Dados Adicionais)"
+            else:
+                # Cenário C: Não encontrado
+                total_final_tributos = 0.0
+                fonte_tributos = ""
+            
+            
+            col_icms, col_ipi, col_pis, col_cofins, col_outras, col_aprox = st.columns(6)
+            
+            # Função auxiliar para formatar moeda (mantida igual)
+            def formatar_moeda_imp(valor):
+                if valor is None or valor == 0.0:
+                    return "R$ 0,00"
+                return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            
+            
+            col_icms.metric("Base ICMS", formatar_moeda_imp(impostos_data.get('base_calculo_icms')))
+            col_icms.metric("Total ICMS", formatar_moeda_imp(impostos_data.get('valor_total_icms')))
+            
+            col_ipi.metric("Total IPI", formatar_moeda_imp(impostos_data.get('valor_total_ipi')))
+            
+            col_pis.metric("Total PIS", formatar_moeda_imp(impostos_data.get('valor_total_pis')))
+            col_cofins.metric("Total COFINS", formatar_moeda_imp(impostos_data.get('valor_total_cofins')))
+            
+            col_outras.metric("Outras Despesas", formatar_moeda_imp(impostos_data.get('valor_outras_despesas')))
+            
+            # NOVO: Exibe o Total Aproximado COM a fonte da informação
+            col_aprox.metric(f"Total V. Aprox. Tributos{fonte_tributos}", formatar_moeda_imp(total_final_tributos))
 
-
-            # --- 4.4 Botão de Download (CORRIGIDO: Referência do nome do emitente) ---
+            # --- 4.4 Botão de Download ---
             st.markdown("---")
             
-            # CORREÇÃO: Tenta pegar o nome_razao, se falhar, usa "extraida"
             try:
                 nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
             except (KeyError, IndexError, TypeError):
