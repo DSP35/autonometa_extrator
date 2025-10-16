@@ -6,7 +6,7 @@ from PIL import Image
 import pytesseract         # OCR
 from pdf2image import convert_from_bytes
 from io import BytesIO
-import json                # NECESSÁRIO para st.download_button
+import json                
 import os
 
 # --- Imports LangChain e Pydantic ---
@@ -32,7 +32,6 @@ class ItemNota(BaseModel):
 class ParteFiscal(BaseModel):
     cnpj_cpf: str = Field(description="CNPJ ou CPF da parte fiscal (apenas dígitos).")
     
-    # CORREÇÃO CRÍTICA: Adiciona alias 'nome_raza' para aceitar o erro comum do LLM
     nome_razao: str = Field(
         description="Nome ou Razão Social completa.",
         validation_alias='nome_raza'
@@ -49,7 +48,7 @@ class TotaisImposto(BaseModel):
     valor_total_pis: float = Field(description="Valor total do PIS destacado na nota.")
     valor_total_cofins: float = Field(description="Valor total do COFINS destacado na nota.")
     valor_outras_despesas: float = Field(description="Valor total de outras despesas acessórias (frete, seguro, etc.).")
-    # Campo de retorno HÍBRIDO: O LLM preenche este campo se encontrar um total único no texto.
+    # Campo de retorno HÍBRIDO (para quando o valor for encontrado apenas no total ou dados adicionais)
     valor_aprox_tributos: float = Field(description="Valor aproximado total dos tributos.") 
 
 # Estrutura Principal da Nota Fiscal
@@ -97,49 +96,6 @@ def check_for_missing_data(data_dict: dict) -> list:
         warnings.append("❌ A lista de Itens/Produtos está vazia.")
     
     return warnings
-
-# --- FUNÇÃO LLM CACHEADA (Para Otimização de Velocidade) ---
-# CORREÇÃO: Usamos '_parser' para evitar o erro de hashing do Streamlit.
-@st.cache_data(show_spinner="⏳ O Agente Gemini está interpretando o texto (a primeira extração pode levar até 1 minuto)...")
-def run_llm_extraction_cached(llm_model: ChatGoogleGenerativeAI, text_to_analyze: str, _parser: PydanticOutputParser):
-    """
-    Executa a extração do LLM de forma cacheada.
-    Se o 'text_to_analyze' for o mesmo, o resultado anterior é retornado instantaneamente.
-    """
-    # 2. Criando o Prompt de Extração de Texto com PromptTemplate robusto
-    prompt_template = ChatPromptTemplate.from_messages(
-        [
-            ("system", 
-                "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. "
-                "ATENÇÃO HÍBRIDA: Para o Valor Aproximado dos Tributos, primeiro tente preencher o campo `valor_aprox_tributos` DENTRO DE CADA ITEM. Se essa informação estiver ausente na tabela de itens, procure o valor TOTAL no campo de 'Dados Adicionais' e preencha o campo `totais_impostos.valor_aprox_tributos`."
-                "Converta todos os valores monetários e numéricos para float. Não invente dados."
-            ),
-            
-            ("human", (
-                "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
-                "Instrução Fiscal Crítica: Priorize a extração do valor de tributos item por item. Se não houver, extraia o total dos tributos do campo de Dados Adicionais."
-                "Obrigatório: extraia a lista de itens APENAS DA TABELA PRINCIPAL.\n\n"
-                "INSTRUÇÕES DE FORMATO:\n"
-                "{format_instructions}\n\n"
-                "TEXTO BRUTO DA NOTA:\n"
-                "{text_to_analyze}"
-            )),
-        ]
-    )
-    
-    prompt_values = prompt_template.partial(
-        format_instructions=_parser.get_format_instructions() # Usamos _parser aqui
-    )
-    
-    final_prompt = prompt_values.format_messages(text_to_analyze=text_to_analyze)
-
-    # 3. Execução do LLM
-    response = llm_model.invoke(final_prompt)
-    extracted_data = _parser.parse(response.content) # E aqui
-
-    # Retorna a resposta bruta (para debug) e os dados validados
-    return response, extracted_data
-
 
 # --- Função Central de OCR (Lida com Imagem e PDF) ---
 def extract_text_from_file(uploaded_file):
@@ -255,15 +211,13 @@ if uploaded_file is not None:
     if "ERRO" not in ocr_text:
         if st.session_state.get("llm_ready", False):
             if st.button("🚀 Interpretar Dados Estruturados com o Agente Gemini", key="run_extraction_btn"):
-                # Limpa o cache para que a nova nota force a extração
-                run_llm_extraction_cached.clear() 
                 st.session_state["run_llm_extraction"] = True
                 st.rerun()
         else:
             st.warning("O Agente Gemini não está pronto. Corrija a API Key para interpretar.")
 
 
-# --- Seção de Execução da Extração (LLM) ---
+# --- Seção de Execução da Extração (LLM - Execução Inline) ---
 if st.session_state.get("run_llm_extraction", False) and st.session_state.get("llm_ready", False):
     
     st.session_state["run_llm_extraction"] = False 
@@ -275,9 +229,42 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
         st.error("Não há texto válido para enviar ao Agente LLM.")
         st.stop()
 
+    # Início do bloco de execução original do LLM
     try:
-        # CHAMADA AO LLM AGORA É CACHEADA! Passamos 'parser' como '_parser'
-        response, extracted_data = run_llm_extraction_cached(llm, text_to_analyze, parser)
+        with st.spinner("⏳ O Agente Gemini está interpretando o texto (o tempo de resposta é de aproximadamente 1 minuto)..."):
+            
+            # 2. Criando o Prompt de Extração de Texto (Mesmo Prompt Reforçado)
+            prompt_template = ChatPromptTemplate.from_messages(
+                [
+                    ("system", 
+                        "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. "
+                        "ATENÇÃO HÍBRIDA: Para o Valor Aproximado dos Tributos, primeiro tente preencher o campo `valor_aprox_tributos` DENTRO DE CADA ITEM. Se essa informação estiver ausente na tabela de itens, procure o valor TOTAL no campo de 'Dados Adicionais' e preencha o campo `totais_impostos.valor_aprox_tributos`."
+                        "Converta todos os valores monetários e numéricos para float. Não invente dados."
+                    ),
+                    
+                    ("human", (
+                        "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
+                        "Instrução Fiscal Crítica: Priorize a extração do valor de tributos item por item. Se não houver, extraia o total dos tributos do campo de Dados Adicionais."
+                        "Obrigatório: extraia a lista de itens APENAS DA TABELA PRINCIPAL.\n\n"
+                        "INSTRUÇÕES DE FORMATO:\n"
+                        "{format_instructions}\n\n"
+                        "TEXTO BRUTO DA NOTA:\n"
+                        "{text_to_analyze}"
+                    )),
+                ]
+            )
+            
+            prompt_values = prompt_template.partial(
+                format_instructions=parser.get_format_instructions()
+            )
+            
+            final_prompt = prompt_values.format_messages(text_to_analyze=text_to_analyze)
+
+            # 3. Execução do LLM
+            response = llm.invoke(final_prompt)
+            extracted_data = parser.parse(response.content)
+        
+        # Fim do bloco de execução do LLM
         
         # 4. Exibição dos Resultados
         st.success("✅ Extração concluída com sucesso!")
@@ -408,7 +395,6 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
 
             col_edit_icms, col_edit_ipi, col_edit_pis, col_edit_cofins = st.columns(4)
             
-            # Usamos 'key' para garantir que o Streamlit salve o estado
             icms_manual = col_edit_icms.text_input("ICMS", value=icms_val, key="manual_icms")
             ipi_manual = col_edit_ipi.text_input("IPI", value=ipi_val, key="manual_ipi")
             pis_manual = col_edit_pis.text_input("PIS", value=pis_val, key="manual_pis")
@@ -416,7 +402,6 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             
             try:
                 # Atualiza o data_dict para o download com os valores manuais
-                # Substituímos vírgulas por pontos para garantir a conversão float
                 data_dict['totais_impostos']['valor_total_icms'] = float(icms_manual.replace(",", "."))
                 data_dict['totais_impostos']['valor_total_ipi'] = float(ipi_manual.replace(",", "."))
                 data_dict['totais_impostos']['valor_total_pis'] = float(pis_manual.replace(",", "."))
@@ -424,7 +409,7 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
                 st.success("Valores de impostos atualizados para o JSON de download.")
                 
             except ValueError:
-                st.error("Por favor, insira apenas números válidos (usando ponto ou vírgula) nos campos de edição.")
+                st.error("Por favor, insira apenas números válidos nos campos de edição.")
 
         # --- Botão de Download ---
         st.markdown("---")
