@@ -43,7 +43,9 @@ class TotaisImposto(BaseModel):
     valor_total_ipi: float = Field(description="Valor total do IPI destacado na nota.")
     valor_total_pis: float = Field(description="Valor total do PIS destacado na nota.")
     valor_total_cofins: float = Field(description="Valor total do COFINS destacado na nota.")
+    valor_aproximado_tributos: float = Field(description="Valor aproximado total dos tributos (Lei da Transparência).") 
     valor_outras_despesas: float = Field(description="Valor total de outras despesas acessórias (frete, seguro, etc.).")
+    
 
 # Estrutura Principal da Nota Fiscal
 class NotaFiscal(BaseModel):
@@ -250,14 +252,14 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
                 [
                     ("system", 
                         "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. "
-                        "ATENÇÃO CRÍTICA: Ao extrair a lista de ITENS (`itens`), **UTILIZE EXCLUSIVAMENTE OS DADOS ENCONTRADOS NA TABELA PRINCIPAL DE PRODUTOS/SERVIÇOS**. "
-                        "Ignore qualquer menção de itens em seções de 'Informações Complementares' ou 'Dados Adicionais' que não possuam colunas fiscais completas (CFOP, valores, etc.). "
-                        "Você deve extrair todos os sub-objetos (impostos, emitente, destinatário) de forma completa e exata. Converta todos os valores para float. Não invente dados."
+                        "ATENÇÃO CRÍTICA: Ao extrair a lista de ITENS (`itens`), UTILIZE EXCLUSIVAMENTE OS DADOS ENCONTRADOS NA TABELA PRINCIPAL DE PRODUTOS/SERVIÇOS. "
+                        "Para os TOTAIS DE IMPOSTOS (`TotaisImposto`), você deve rastrear e extrair os valores (ICMS, IPI, PIS, COFINS e VALOR APROXIMADO DOS TRIBUTOS) em QUALQUER SEÇÃO DO TEXTO (tabela, cálculo do imposto ou dados adicionais). "
+                        "Converta todos os valores monetários e numéricos para float. Não invente dados."
                     ),
                     
                     ("human", (
                         "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
-                        "**PRIORIZE a extração dos totais de impostos (ICMS, IPI, PIS, COFINS)**. "
+                        "**Rastreie a nota inteira para encontrar os TOTAIS DE IMPOSTOS** (principalmente ICMS, IPI, PIS, COFINS e o Valor Aproximado dos Tributos). "
                         "Obrigatório: extraia a lista de itens APENAS DA TABELA PRINCIPAL.\n\n"
                         "INSTRUÇÕES DE FORMATO:\n"
                         "{format_instructions}\n\n"
