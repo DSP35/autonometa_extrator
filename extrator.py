@@ -308,30 +308,6 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             
             col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
             col_chave.code(data_dict['chave_acesso'])
-            
-            st.markdown("---")
-            st.subheader("💰 Totais de Impostos e Despesas")
-            
-            # Extrai o dicionário de impostos
-            impostos_data = data_dict.get('totais_impostos', {})
-            
-            col_icms, col_ipi, col_pis, col_cofins, col_outras = st.columns(5)
-            
-            # Função auxiliar para formatar moeda e lidar com None/0
-            def formatar_moeda_imp(valor):
-                if valor is None or valor == 0.0:
-                    return "R$ 0,00"
-                return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-            
-            col_icms.metric("Base ICMS", formatar_moeda_imp(impostos_data.get('base_calculo_icms')))
-            col_icms.metric("Total ICMS", formatar_moeda_imp(impostos_data.get('valor_total_icms')))
-            
-            col_ipi.metric("Total IPI", formatar_moeda_imp(impostos_data.get('valor_total_ipi')))
-            
-            col_pis.metric("Total PIS", formatar_moeda_imp(impostos_data.get('valor_total_pis')))
-            col_cofins.metric("Total COFINS", formatar_moeda_imp(impostos_data.get('valor_total_cofins')))
-            
-            col_outras.metric("Outras Despesas", formatar_moeda_imp(impostos_data.get('valor_outras_despesas')))
 
             # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
             st.markdown("---")
