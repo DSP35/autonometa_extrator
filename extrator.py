@@ -11,10 +11,10 @@ import os
 
 # --- Imports LangChain e Pydantic ---
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate        
+from langchain_core.output_parsers import PydanticOutputParser 
 from pydantic import BaseModel, Field, ValidationError
-from typing import Optional 
+from typing import Optional
 
 # --- 1. Definindo o Schema de Saída (Estrutura da Nota Fiscal) ---
 
