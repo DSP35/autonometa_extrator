@@ -3,6 +3,7 @@ pillow
 pypdf 
 pdf2image
 pytesseract
+langchain-core
 langchain
 langchain-google-genai
 pydantic
