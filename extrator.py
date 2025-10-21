@@ -9,12 +9,12 @@ from io import BytesIO
 import json                
 import os
 
-# --- Imports LangChain e Pydantic ---
+# --- Imports LangChain e Pydantic (CORRIGIDOS) ---
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate        
 from langchain_core.output_parsers import PydanticOutputParser 
 from pydantic import BaseModel, Field, ValidationError
-from typing import Optional
+from typing import Optional 
 
 # --- 1. Definindo o Schema de Saída (Estrutura da Nota Fiscal) ---
 
@@ -48,27 +48,22 @@ class TotaisImposto(BaseModel):
     valor_total_pis: float = Field(description="Valor total do PIS destacado na nota.")
     valor_total_cofins: float = Field(description="Valor total do COFINS destacado na nota.")
     valor_outras_despesas: float = Field(description="Valor total de outras despesas acessórias (frete, seguro, etc.).")
-    # Campo de retorno HÍBRIDO (para quando o valor for encontrado apenas no total ou dados adicionais)
     valor_aprox_tributos: float = Field(description="Valor aproximado total dos tributos.") 
 
 # Estrutura Principal da Nota Fiscal
 class NotaFiscal(BaseModel):
     """Estrutura Padrão e Completa dos Dados de uma Nota Fiscal."""
     
-    # Dados Gerais
     chave_acesso: str = Field(description="Chave de Acesso da NF-e (44 dígitos), se presente.")
     modelo_documento: str = Field(description="Modelo do documento fiscal (Ex: NF-e, NFS-e, Cupom).")
     data_emissao: str = Field(description="Data de emissão da nota fiscal no formato YYYY-MM-DD.")
     valor_total_nota: float = Field(description="Valor total FINAL da nota fiscal (somatório de tudo).")
     
-    # Emitente e Destinatário
     emitente: ParteFiscal = Field(description="Dados completos do emitente (quem vendeu/prestou o serviço).")
     destinatario: ParteFiscal = Field(description="Dados completos do destinatário (quem comprou/recebeu o serviço).")
     
-    # NOVOS TOTAIS DE IMPOSTOS
     totais_impostos: TotaisImposto = Field(description="Valores totais de impostos e despesas acessórias da nota.")
 
-    # Itens/Serviços (Lista)
     itens: list[ItemNota] = Field(description="Lista completa de todos os produtos ou serviços discriminados na nota, seguindo o esquema ItemNota.")
 
 # --- Função de Checagem de Qualidade ---
@@ -76,7 +71,6 @@ def check_for_missing_data(data_dict: dict) -> list:
     """Verifica se há dados críticos faltantes ou zerados e retorna uma lista de avisos."""
     warnings = []
     
-    # 1. Checagem de CNPJ/Razão Social (o mais importante)
     emitente = data_dict.get('emitente', {})
     destinatario = data_dict.get('destinatario', {})
 
@@ -86,12 +80,10 @@ def check_for_missing_data(data_dict: dict) -> list:
     if not destinatario.get('cnpj_cpf') or not destinatario.get('nome_razao'):
         warnings.append("❌ Dados completos do Destinatário estão faltando ou ilegíveis.")
 
-    # 2. Checagem de Valores (Floats)
     valor_total_nota = data_dict.get('valor_total_nota', 0.0)
     if valor_total_nota <= 0.0:
         warnings.append("❌ O 'Valor Total da Nota' está zerado (R$ 0,00).")
     
-    # 3. Checagem da lista de itens
     if not data_dict.get('itens'):
         warnings.append("❌ A lista de Itens/Produtos está vazia.")
     
@@ -106,12 +98,10 @@ def extract_text_from_file(uploaded_file):
     file_type = uploaded_file.type
     uploaded_file.seek(0)
     
-    # Define a configuração para forçar a leitura de colunas e blocos (PSM 4)
     tesseract_config = '--psm 4' 
     
     # 1. Se for PDF
     if "pdf" in file_type:
-        st.info("Arquivo PDF detectado. Convertendo primeira página para imagem e extraindo texto...")
         try:
             images = convert_from_bytes(uploaded_file.read(), first_page=1, last_page=1)
             if not images:
@@ -126,7 +116,6 @@ def extract_text_from_file(uploaded_file):
 
     # 2. Se for Imagem
     elif "image" in file_type:
-        st.info("Arquivo de Imagem detectado. Extraindo texto...")
         try:
             img = Image.open(uploaded_file)
             text = pytesseract.image_to_string(img, lang='por', config=tesseract_config)
@@ -155,7 +144,7 @@ if "google_api_key" in st.secrets:
         st.error(f"Erro ao inicializar o modelo Gemini. Detalhes: {e}")
         st.session_state["llm_ready"] = False
 else:
-    st.error("A chave da API do Gemini (google_api_key) não foi encontrada...")
+    # A chave é necessária para a funcionalidade LLM
     st.session_state["llm_ready"] = False
 
 
@@ -164,10 +153,10 @@ st.set_page_config(page_title="Extrator Autonometa", layout="wide")
 st.title("🤖 Extrator Autonometa (OCR + LLM) de Notas Fiscais")
 st.markdown("---")
 
-# --- Seção de Upload e OCR ---
-st.header("Upload da Nota Fiscal")
+# --- 1. Botão de Carregamento na Sidebar ---
+st.sidebar.header("Upload da Nota Fiscal (1/2)")
 
-uploaded_file = st.file_uploader(
+uploaded_file = st.sidebar.file_uploader(
     "Escolha a Nota Fiscal (JPG, PNG ou PDF):",
     type=['png', 'jpg', 'jpeg', 'pdf']
 )
@@ -183,51 +172,41 @@ if uploaded_file is not None:
         
     st.session_state["ocr_text"] = ocr_text
 
-    # 2. Visualização e Verificação
-    st.subheader("Visualização e Texto Bruto Extraído")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if "image_to_display" in st.session_state:
-             st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", use_container_width=True)
-
-    with col2:
+    # --- 2. Miniatura da Imagem na Sidebar ---
+    if "image_to_display" in st.session_state:
+        st.sidebar.success("Imagem carregada e OCR inicial concluído.")
+        with st.sidebar.expander("🔎 Visualizar Nota Fiscal"):
+            st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", use_container_width=True)
+    else:
+        # Exibir erro de OCR na sidebar se houver
         if "ERRO" in ocr_text:
-            st.error(f"Erro no OCR: {ocr_text}")
+             st.sidebar.error(f"Erro no OCR: {ocr_text}")
         else:
-            st.success("Texto Bruto extraído com sucesso!")
-            st.info("Texto (Será enviado ao Gemini para Interpretação):")
-            display_text = ocr_text[:1000] + "..." if len(ocr_text) > 1000 else ocr_text
-            st.code(display_text, language="text")
-            
-            # Expander para o Texto Bruto Completo para debug
-            with st.expander("🔎 Ver Texto Bruto COMPLETO da Nota Fiscal (DEBUG)"):
-                 st.code(ocr_text, language="text")
+             st.sidebar.info("Arquivo PDF processado. Clique para continuar.")
+    
 
-    st.markdown("---")
-
-    # 3. Próxima Etapa: Botão de Interpretação LLM
+    # 3. Próxima Etapa: Botão de Interpretação LLM (MANTIDO NA TELA PRINCIPAL)
     if "ERRO" not in ocr_text:
+        st.subheader("Interpretação de Dados Estruturados (2/2)")
+        
         if st.session_state.get("llm_ready", False):
             if st.button("🚀 Interpretar Dados Estruturados com o Agente Gemini", key="run_extraction_btn"):
                 st.session_state["run_llm_extraction"] = True
                 st.rerun()
         else:
-            st.warning("O Agente Gemini não está pronto. Corrija a API Key para interpretar.")
+            st.error("⚠️ O Agente Gemini não está pronto. Verifique sua `google_api_key`.")
 
 
 # --- Seção de Execução da Extração (LLM - Execução Inline) ---
+# O bloco abaixo é a tela principal de resultados, visível apenas após a extração.
 if st.session_state.get("run_llm_extraction", False) and st.session_state.get("llm_ready", False):
     
     st.session_state["run_llm_extraction"] = False 
     
     text_to_analyze = st.session_state.get("ocr_text", "")
-    response = None # Inicializa 'response' para uso no bloco except
+    response = None 
     
-    if not text_to_analyze or "ERRO" in text_to_analyze:
-        st.error("Não há texto válido para enviar ao Agente LLM.")
-        st.stop()
+    # 3. REMOVEMOS A VISUALIZAÇÃO DO OCR AQUI (JÁ FEITO NA VERSÃO ANTERIOR E AGORA NA SIDEBAR)
 
     # Início do bloco de execução original do LLM
     try:
@@ -264,19 +243,16 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             response = llm.invoke(final_prompt)
             extracted_data = parser.parse(response.content)
         
-        # Fim do bloco de execução do LLM
+        # 4. Exibição dos Resultados (Tela Principal)
+        st.header("✅ Resultado da Extração Estruturada")
         
-        # 4. Exibição dos Resultados
-        st.success("✅ Extração concluída com sucesso!")
-        
-        # Converte o Pydantic object para um dicionário Python simples
         data_dict = extracted_data.model_dump()
 
         # --- Verificação de Qualidade ---
         quality_warnings = check_for_missing_data(data_dict)
         
         if quality_warnings:
-            st.warning("⚠️ Atenção: Diversas informações críticas estão faltando ou ilegíveis na nota fiscal. Isso geralmente ocorre devido à má qualidade da digitalização ou campos não preenchidos.")
+            st.warning("⚠️ Atenção: Diversas informações críticas estão faltando ou ilegíveis na nota fiscal. Isso geralmente ocorre devido à má qualidade da digitalização.")
             with st.expander("Clique para ver os campos faltantes ou zerados"):
                 for warning in quality_warnings:
                     st.markdown(warning)
@@ -298,11 +274,13 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
         # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
         st.markdown("---")
         
-        with st.expander("🏢 Detalhes do Emitente", expanded=False):
+        col_emitente, col_destinatario = st.columns(2)
+        
+        with col_emitente.expander("🏢 Detalhes do Emitente", expanded=False):
             emitente_data = data_dict.get('emitente', {})
             st.json(emitente_data)
 
-        with st.expander("👤 Detalhes do Destinatário", expanded=False):
+        with col_destinatario.expander("👤 Detalhes do Destinatário", expanded=False):
             destinatario_data = data_dict.get('destinatario', {})
             st.json(destinatario_data)
 
@@ -314,7 +292,6 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
         total_tributos_calculado = 0.0
 
         if itens_list:
-            # Calcule o total dos tributos a partir dos itens
             for item in itens_list:
                 valor = item.get('valor_aprox_tributos', 0.0)
                 if isinstance(valor, (int, float)):
@@ -379,14 +356,14 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
         col_aprox.metric(f"Total V. Aprox. Tributos{fonte_tributos}", formatar_moeda_imp(total_final_tributos))
         
         
-        # --- NOVO BLOCO: Edição Manual Assistida de Impostos Zerados ---
+        # --- Edição Manual Assistida de Impostos Zerados ---
         icms_zerado = impostos_data.get('valor_total_icms', 0.0) <= 0.0
         ipi_zerado = impostos_data.get('valor_total_ipi', 0.0) <= 0.0
         
         if icms_zerado or ipi_zerado:
             st.markdown("---")
             st.subheader("✍️ Edição Manual de Impostos")
-            st.info("O Agente LLM não conseguiu extrair os valores detalhados de impostos (ICMS, IPI, PIS/COFINS). Se a nota contém esses valores, insira-os manualmente abaixo para que sejam incluídos no JSON de download.")
+            st.info("O Agente LLM não conseguiu extrair os valores detalhados. Se a nota contém esses valores, insira-os abaixo.")
             
             icms_val = str(impostos_data.get('valor_total_icms', 0.0))
             ipi_val = str(impostos_data.get('valor_total_ipi', 0.0))
@@ -401,7 +378,7 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             cofins_manual = col_edit_cofins.text_input("COFINS", value=cofins_val, key="manual_cofins")
             
             try:
-                # Atualiza o data_dict para o download com os valores manuais
+                # Atualiza o data_dict para o download
                 data_dict['totais_impostos']['valor_total_icms'] = float(icms_manual.replace(",", "."))
                 data_dict['totais_impostos']['valor_total_ipi'] = float(ipi_manual.replace(",", "."))
                 data_dict['totais_impostos']['valor_total_pis'] = float(pis_manual.replace(",", "."))
@@ -427,26 +404,21 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             mime="application/json"
         )
 
-        with st.expander("Ver JSON Bruto Completo", expanded=False):
+        with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
              st.json(data_dict)
 
 
     except ValidationError as ve:
         st.error("Houve um erro de validação (Pydantic). O Gemini pode ter retornado um JSON malformado.")
-        # Exibe o JSON que o Gemini tentou retornar para debug
         if response is not None:
             with st.expander("Ver Resposta Bruta do LLM (JSON malformado)", expanded=True):
                 st.code(response.content, language='json')
         st.warning(f"Detalhes do Erro: {ve}")
 
     except Exception as e:
-        # TRATAMENTO DE ERRO GENÉRICO
         st.error(f"Houve um erro geral durante a interpretação pelo Gemini. Detalhes: {e}")
-        
         if 'response' in locals() and response is not None:
             with st.expander("Ver Resposta Bruta do LLM (Debugging)", expanded=True):
                 st.code(response.content, language='json')
         
-        st.warning("O Agente LLM pode ter falhado ao processar o texto OCR.")
-
 st.markdown("---")
