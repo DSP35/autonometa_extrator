@@ -154,6 +154,16 @@ st.set_page_config(page_title="Extrator Autonometa", layout="wide")
 st.title("🤖 Extrator Autonometa (OCR + LLM) de Notas Fiscais")
 st.markdown("---")
 
+# --- NOVO: Adição do Logo na Sidebar ---
+st.sidebar.markdown(
+    """
+    <div style="text-align: center;">
+        <img src="https://i.imgur.com/oH1wbZ4.png" width="150">
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
 # --- 1. Botão de Carregamento na Sidebar ---
 st.sidebar.header("Upload da Nota Fiscal (1/2)")
 
