@@ -58,6 +58,8 @@ class NotaFiscal(BaseModel):
     modelo_documento: str = Field(description="Modelo do documento fiscal (Ex: NF-e, NFS-e, Cupom).")
     data_emissao: str = Field(description="Data de emissão da nota fiscal no formato YYYY-MM-DD.")
     valor_total_nota: float = Field(description="Valor total FINAL da nota fiscal (somatório de tudo).")
+    # NOVO CAMPO ADICIONADO: Natureza da Operação
+    natureza_operacao: str = Field(description="Descrição da natureza da operação (Ex: Venda de Mercadoria, Remessa para Armazém Geral).")
     
     emitente: ParteFiscal = Field(description="Dados completos do emitente (quem vendeu/prestou o serviço).")
     destinatario: ParteFiscal = Field(description="Dados completos do destinatário (quem comprou/recebeu o serviço).")
@@ -144,7 +146,6 @@ if "google_api_key" in st.secrets:
         st.error(f"Erro ao inicializar o modelo Gemini. Detalhes: {e}")
         st.session_state["llm_ready"] = False
 else:
-    # A chave é necessária para a funcionalidade LLM
     st.session_state["llm_ready"] = False
 
 
@@ -198,7 +199,6 @@ if uploaded_file is not None:
 
 
 # --- Seção de Execução da Extração (LLM - Execução Inline) ---
-# O bloco abaixo é a tela principal de resultados, visível apenas após a extração.
 if st.session_state.get("run_llm_extraction", False) and st.session_state.get("llm_ready", False):
     
     st.session_state["run_llm_extraction"] = False 
@@ -206,17 +206,20 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
     text_to_analyze = st.session_state.get("ocr_text", "")
     response = None 
     
-    # 3. REMOVEMOS A VISUALIZAÇÃO DO OCR AQUI (JÁ FEITO NA VERSÃO ANTERIOR E AGORA NA SIDEBAR)
+    if not text_to_analyze or "ERRO" in text_to_analyze:
+        st.error("Não há texto válido para enviar ao Agente LLM.")
+        st.stop()
 
     # Início do bloco de execução original do LLM
     try:
         with st.spinner("⏳ O Agente Gemini está interpretando o texto (o tempo de resposta é de aproximadamente 1 minuto)..."):
             
-            # 2. Criando o Prompt de Extração de Texto (Mesmo Prompt Reforçado)
+            # 2. Criando o Prompt de Extração de Texto (Prompt Atualizado)
             prompt_template = ChatPromptTemplate.from_messages(
                 [
                     ("system", 
                         "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. "
+                        "Instruções Específicas: Garanta a extração do campo `natureza_operacao` e da `chave_acesso`. "
                         "ATENÇÃO HÍBRIDA: Para o Valor Aproximado dos Tributos, primeiro tente preencher o campo `valor_aprox_tributos` DENTRO DE CADA ITEM. Se essa informação estiver ausente na tabela de itens, procure o valor TOTAL no campo de 'Dados Adicionais' e preencha o campo `totais_impostos.valor_aprox_tributos`."
                         "Converta todos os valores monetários e numéricos para float. Não invente dados."
                     ),
@@ -259,21 +262,34 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
 
         st.subheader("Informações Principais")
         
-        # --- 4.1 Cabeçalho da Nota com st.columns e st.metric ---
-        col_data, col_valor, col_modelo, col_chave = st.columns(4)
+        # --- 4.1 Cabeçalho da Nota com st.columns e st.metric (ATUALIZADO) ---
+        # 4 colunas: Data, Valor, Modelo, Natureza da Operação
+        col_data, col_valor, col_modelo, col_natureza = st.columns(4)
         
+        # Métrica 1: Data de Emissão
         col_data.metric("Data de Emissão", data_dict['data_emissao'])
         
+        # Métrica 2: Valor Total
         valor_formatado = f"R$ {data_dict['valor_total_nota']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         col_valor.metric("Valor Total da Nota", valor_formatado)
         
+        # Métrica 3: Modelo Fiscal
         col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
-        col_chave.code(data_dict['chave_acesso'])
+        
+        # Métrica 4: Natureza da Operação (NOVO)
+        col_natureza.metric("Natureza da Operação", data_dict['natureza_operacao'])
 
 
-        # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
         st.markdown("---")
         
+        # --- Chave de Acesso (Identificador) (ATUALIZADO) ---
+        st.markdown("#### 🔑 **Chave de Acesso da NF-e**")
+        st.code(data_dict['chave_acesso'], language="text")
+
+        st.markdown("---")
+        
+        
+        # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
         col_emitente, col_destinatario = st.columns(2)
         
         with col_emitente.expander("🏢 Detalhes do Emitente", expanded=False):
