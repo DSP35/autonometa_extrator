@@ -484,13 +484,19 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     quality_warnings = check_for_missing_data(data_dict)
 
     if quality_warnings:
-        st.warning("⚠️ Atenção: Diversas informações críticas estão faltando ou ilegíveis na nota fiscal. Isso geralmente ocorre devido à má qualidade da digitalização.")
-        with st.expander("Clique para ver os campos faltantes ou zerados"):
+        # Usamos uma caixa de erro/aviso que é naturalmente mais visível
+        st.error(f"⚠️ Atenção: Foram encontradas **{len(quality_warnings)} informações críticas faltando** ou zeradas na nota fiscal. Verifique a lista abaixo:")
+        
+        # O expander é forçado a abrir (expanded=True) se houver avisos
+        with st.expander("Clique para ver os detalhes das inconsistências", expanded=True): 
             for warning in quality_warnings:
                 st.markdown(warning)
+    else:
+        st.success("🎉 Verificação de Qualidade concluída: Nenhuma informação crítica obrigatória faltando (Emitente, Destinatário, Valor, Itens).")
 
+    st.markdown("---") # Separador após a checagem
 
-    # --- 3. DASHBOARD: KPIs e Indicadores ---
+    # --- 2. DASHBOARD: KPIs e Indicadores ---
     st.subheader("📊 Resumo Fiscal (KPIs)")
 
     impostos_data = data_dict.get('totais_impostos', {})
@@ -500,13 +506,13 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     total_icms = impostos_data.get('valor_total_icms', 0.0)
     total_ipi = impostos_data.get('valor_total_ipi', 0.0)
 
-    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    # RECONFIGURAÇÃO DOS KPIs - REMOVEMOS O KPI DE INCONSISTÊNCIAS JÁ QUE ESTÁ ACIMA
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4) # De 5 colunas para 4
 
     kpi1.metric("Valor Total da NF", formatar_moeda_imp(valor_total).replace("R$ ", ""))
     kpi2.metric("V. Aprox. Tributos", formatar_moeda_imp(total_tributos).replace("R$ ", ""))
-    kpi3.metric("Total ICMS", formatar_moeda_imp(total_icms).replace("R$ ", ""))
-    kpi4.metric("Nº de Itens", total_itens)
-    kpi5.metric("Inconsistências", len(quality_warnings), delta="Críticas encontradas", delta_color="inverse")
+    kpi3.metric("Total ICMS/IPI", f"{formatar_moeda_imp(total_icms).replace('R$ ', '')} / {formatar_moeda_imp(total_ipi).replace('R$ ', '')}")
+    kpi4.metric("Nº de Itens", total_itens) 
 
     st.markdown("---")
 
