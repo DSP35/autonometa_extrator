@@ -41,7 +41,7 @@ if 'TESSERACT_PATH' in os.environ:
 elif os.path.exists(TESSERACT_PATH):
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
 else:
-    pass # Configuração opcional para ambientes locais (Windows/Mac)
+    pass
 
 # Inicialização do LLM (lida com chaves via st.secrets)
 llm = None
@@ -80,7 +80,7 @@ class ParteFiscal(BaseModel):
     cnpj_cpf: str = Field(description="CNPJ ou CPF da parte fiscal (apenas dígitos).")
     nome_razao: str = Field(
         description="Nome ou Razão Social completa.",
-        validation_alias='nome_raza' # Alias para lidar com possíveis erros de OCR ('nome_raza' ou 'nome_razao')
+        validation_alias='nome_raza'
     )
     endereco_completo: str = Field(description="Endereço completo (Rua, Número, Bairro, Cidade, Estado).")
     inscricao_estadual: str = Field(description="Inscrição Estadual, se disponível.")
@@ -121,8 +121,8 @@ def formatar_moeda_imp(valor):
     """Função auxiliar para formatar float como moeda brasileira (R$ X.XXX,XX)."""
     if valor is None or valor == 0.0:
         return "R$ 0,00"
-    # Lógica: substitui vírgula por X, ponto por vírgula, X por ponto.
     try:
+        # Lógica: substitui vírgula por X, ponto por vírgula, X por ponto.
         return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except (TypeError, ValueError):
         return "R$ 0,00"
@@ -228,7 +228,6 @@ def parse_xml_nfe(xml_content: str) -> dict:
     Processa o conteúdo XML de uma NF-e e extrai os dados diretamente
     para o formato de dicionário compatível com NotaFiscal.
     """
-    # Remove o namespace para facilitar o XPath
     xml_content = xml_content.replace('xmlns="http://www.portalfiscal.inf.br/nfe"', '')
     root = ET.fromstring(xml_content)
 
@@ -715,7 +714,6 @@ if uploaded_file is not None:
                 st.error(data_dict["error"])
             else:
                 try:
-                    # Valida a estrutura completa com Pydantic (Garantia de conformidade)
                     NotaFiscal(**data_dict)
                     display_extraction_results(data_dict, source="XML")
                 except ValidationError as ve:
