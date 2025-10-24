@@ -838,10 +838,16 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             prompt_template = ChatPromptTemplate.from_messages(
                 [
                     ("system", 
-                        "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. "
-                        "Instruções Específicas: Garanta a extração do campo `natureza_operacao` e da `chave_acesso`. "
-                        "ATENÇÃO HÍBRIDA: Para o Valor Aproximado dos Tributos, primeiro tente preencher o campo `valor_aprox_tributos` DENTRO DE CADA ITEM. Se essa informação estiver ausente na tabela de itens, procure o valor TOTAL no campo de 'Dados Adicionais' e preencha o campo `totais_impostos.valor_aprox_tributos`."
-                        "Converta todos os valores monetários e numéricos para float. Não invente dados."
+                        "Você é um Agente de Extração Fiscal especializado em Notas Fiscais Eletrônicas (NF-e) e DANFE."
+                        "Sua função é ler o texto bruto (OCR) de documentos fiscais e extrair os dados em formato JSON, "
+                        "obedecendo rigorosamente o schema Pydantic fornecido."
+                        "Siga estas regras estritas:"
+                        "1. **Extração de Texto Bruto:** Se um campo estiver faltando ou for ilegível no texto OCR, preencha-o com uma string vazia (''), mas *nunca* invente dados."
+                        "2. **Valores Numéricos:** Converta todos os valores monetários e quantias para o formato `float` (ponto como separador decimal), sem formatação de moeda (ex: 5450.0)."
+                        "3. **Datas:** Converta todas as datas para o formato estrito 'AAAA-MM-DD'."
+                        "4. **Chave de Acesso:** A chave deve ser uma string de 44 dígitos (apenas números)."
+                        "5. **Tabelas de Itens (CRÍTICO):** Ao extrair a lista de `itens`, preste **MÁXIMA ATENÇÃO** à leitura correta das colunas na tabela. O campo `valor_total` deve ser o **Valor Total do Item/Produto**, e **NÃO** o Valor do ICMS, IPI, ou qualquer outro imposto. Evite somar colunas adjacentes por engano."
+                        "6. **Saída:** O resultado final deve ser **SOMENTE** o JSON, sem qualquer texto explicativo ou markdown adicional."
                     ),
                     
                     ("human", (
