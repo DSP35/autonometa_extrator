@@ -24,7 +24,44 @@ from typing import Optional
 
 
 # =======================================================================
-# --- 1. Definindo os Schemas de Saída (Estruturas Pydantic) ---
+# --- 1. CONFIGURAÇÕES INICIAIS E GERAIS ---
+# =======================================================================
+
+# Configuração do Streamlit
+st.set_page_config(
+    page_title="Extrator Autonometa",
+    layout="wide",
+    initial_sidebar_state="auto"
+)
+
+# Configuração do Tesseract
+TESSERACT_PATH = '/usr/bin/tesseract'
+if 'TESSERACT_PATH' in os.environ:
+    pytesseract.pytesseract.tesseract_cmd = os.environ['TESSERACT_PATH']
+elif os.path.exists(TESSERACT_PATH):
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+else:
+    pass # Configuração opcional para ambientes locais (Windows/Mac)
+
+# Inicialização do LLM (lida com chaves via st.secrets)
+llm = None
+if "google_api_key" in st.secrets:
+    try:
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=st.secrets["google_api_key"],
+            temperature=0.1
+        )
+        st.session_state["llm_ready"] = True
+    except Exception as e:
+        st.error(f"Erro ao inicializar o modelo Gemini. Detalhes: {e}")
+        st.session_state["llm_ready"] = False
+else:
+    st.session_state["llm_ready"] = False
+
+
+# =======================================================================
+# --- 2. DEFININDO OS SCHEMAS DE SAÍDA (ESTRUTURAS PYDANTIC) ---
 # =======================================================================
 
 class ItemNota(BaseModel):
@@ -43,7 +80,7 @@ class ParteFiscal(BaseModel):
     cnpj_cpf: str = Field(description="CNPJ ou CPF da parte fiscal (apenas dígitos).")
     nome_razao: str = Field(
         description="Nome ou Razão Social completa.",
-        validation_alias='nome_raza'
+        validation_alias='nome_raza' # Alias para lidar com possíveis erros de OCR ('nome_raza' ou 'nome_razao')
     )
     endereco_completo: str = Field(description="Endereço completo (Rua, Número, Bairro, Cidade, Estado).")
     inscricao_estadual: str = Field(description="Inscrição Estadual, se disponível.")
@@ -77,57 +114,148 @@ class NotaFiscal(BaseModel):
 
 
 # =======================================================================
-# --- 2. Funções de Extração e Auxiliares de Lógica Principal ---
+# --- 3. FUNÇÕES DE EXTRAÇÃO, PRÉ-PROCESSAMENTO E AUXILIARES ---
 # =======================================================================
+
+def formatar_moeda_imp(valor):
+    """Função auxiliar para formatar float como moeda brasileira (R$ X.XXX,XX)."""
+    if valor is None or valor == 0.0:
+        return "R$ 0,00"
+    # Lógica: substitui vírgula por X, ponto por vírgula, X por ponto.
+    try:
+        return f"R$ {float(valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (TypeError, ValueError):
+        return "R$ 0,00"
+
+
+def get_image_brightness(image_np):
+    """Calcula o brilho médio da imagem (escala de cinza)."""
+    gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+    return np.mean(gray)
+
+
+def preprocess_image_for_ocr(image_pil: Image.Image) -> np.ndarray:
+    """
+    Aplica pré-processamento (OpenCV) para aumentar a robustez do OCR.
+    Passos: Binarização adaptativa e Remoção de Ruído.
+    """
+    image_np = np.array(image_pil.convert('RGB'))
+    image_np = image_np[:, :, ::-1].copy()
+
+    gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+
+    # Alerta básico de qualidade (Brilho)
+    brightness = get_image_brightness(image_np)
+    if brightness < 80:
+        st.sidebar.warning(f"⚠️ Nota: Imagem escura (Brilho: {brightness:.0f}). A precisão do OCR pode ser afetada.")
+    elif brightness > 220:
+         st.sidebar.warning(f"⚠️ Nota: Imagem muito clara (Brilho: {brightness:.0f}). A precisão do OCR pode ser afetada.")
+
+    # Suavização (Remoção de Ruído)
+    denoised = cv2.medianBlur(gray, 3)
+
+    # Binarização Adaptativa
+    processed_image = cv2.adaptiveThreshold(
+        denoised,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        11,
+        2
+    )
+
+    return processed_image
+
+
+def extract_text_from_file(uploaded_file):
+    """
+    Processa o arquivo carregado (JPG/PNG ou PDF) e retorna o texto extraído
+    usando Tesseract OCR, com pré-processamento do OpenCV.
+    """
+    file_type = uploaded_file.type
+    uploaded_file.seek(0)
+
+    tesseract_config = '--psm 4'
+
+    full_text_list = []
+    images_to_process = []
+    img_to_display = None
+
+    if "pdf" in file_type:
+        try:
+            images_to_process = convert_from_bytes(uploaded_file.read())
+
+            if not images_to_process:
+                return "ERRO_CONVERSAO: Não foi possível converter o PDF em imagem."
+
+            img_to_display = images_to_process[0]
+
+        except Exception as e:
+            return f"ERRO_PDF: Verifique se 'poppler-utils' está instalado via packages.txt. Detalhes: {e}"
+
+    elif "image" in file_type:
+        try:
+            img_to_display = Image.open(uploaded_file)
+            images_to_process.append(img_to_display)
+        except Exception as e:
+            return f"ERRO_IMAGEM: Falha na abertura da imagem. Detalhes: {e}"
+
+    else:
+        return "ERRO_TIPO_INVALIDO: Tipo de arquivo não suportado."
+
+    if images_to_process:
+        try:
+            for i, image_pil in enumerate(images_to_process):
+                img_for_ocr = preprocess_image_for_ocr(image_pil)
+                text = pytesseract.image_to_string(img_for_ocr, lang='por', config=tesseract_config)
+                full_text_list.append(f"\n--- INÍCIO PÁGINA {i+1} ---\n\n" + text)
+
+            if img_to_display is not None:
+                st.session_state["image_to_display"] = img_to_display
+
+            return "\n".join(full_text_list)
+
+        except pytesseract.TesseractNotFoundError:
+            return "ERRO_IMAGEM: O Tesseract não está instalado corretamente via packages.txt."
+        except Exception as e:
+            return f"ERRO_PROCESSAMENTO: Falha no OCR ou pré-processamento. Detalhes: {e}"
+
+    return "ERRO_FALHA_GERAL: Falha desconhecida na extração de texto."
+
 
 def parse_xml_nfe(xml_content: str) -> dict:
     """
     Processa o conteúdo XML de uma NF-e e extrai os dados diretamente
     para o formato de dicionário compatível com NotaFiscal.
     """
-    # 1. Parsing do XML
     # Remove o namespace para facilitar o XPath
     xml_content = xml_content.replace('xmlns="http://www.portalfiscal.inf.br/nfe"', '')
     root = ET.fromstring(xml_content)
 
-    # Define a função de busca segura (XPath simples)
     def find_text(path, element=root, default=""):
         node = element.find(path)
         return node.text if node is not None else default
 
     def safe_float(text):
         try:
-            # Substitui vírgula por ponto para parsing
             if isinstance(text, str):
                  text = text.replace(',', '.')
             return float(text)
         except (ValueError, TypeError):
             return 0.0
 
-    # 2. Dados de Cabeçalho (ide) e Totais
-    # Caminho base para os dados da NF
-    infNFe = root.find('.//infNFe')
-
     # Dados Principais
-    chave_acesso = find_text('.//chNFe')
-    if not chave_acesso:
-         # Tenta a chave em Id
-         chave_acesso = find_text('.//Id', default="").replace('NFe', '')
-
-    data_emissao = find_text('.//dhEmi') # datetime ISO
-    if not data_emissao:
-        data_emissao = find_text('.//dEmi') # date YYYY-MM-DD
-
-    # Ajusta a data para YYYY-MM-DD
+    chave_acesso = find_text('.//chNFe') or find_text('.//Id', default="").replace('NFe', '')
+    data_emissao = find_text('.//dhEmi') or find_text('.//dEmi')
     if data_emissao and len(data_emissao) > 10:
         data_emissao = data_emissao[:10]
 
     modelo_documento = find_text('.//mod')
-    valor_total_nota = safe_float(find_text('.//vNF'))
+    icms_tot = root.find('.//ICMSTot')
+    valor_total_nota = safe_float(find_text('.//vNF', icms_tot))
     natureza_operacao = find_text('.//natOp')
 
     # Totais de Impostos (imposto/ICMSTot)
-    icms_tot = root.find('.//ICMSTot')
     totais_impostos = {
         'base_calculo_icms': safe_float(find_text('.//vBC', icms_tot)),
         'valor_total_icms': safe_float(find_text('.//vICMS', icms_tot)),
@@ -135,12 +263,10 @@ def parse_xml_nfe(xml_content: str) -> dict:
         'valor_total_pis': safe_float(find_text('.//vPIS', icms_tot)),
         'valor_total_cofins': safe_float(find_text('.//vCOFINS', icms_tot)),
         'valor_outras_despesas': safe_float(find_text('.//vOutro', icms_tot)),
-        # Valor aproximado dos tributos (vTotTrib)
         'valor_aprox_tributos': safe_float(find_text('.//vTotTrib', icms_tot)),
     }
 
-    # 3. Emitente (emit) e Destinatário (dest)
-
+    # Emitente (emit) e Destinatário (dest)
     def extract_parte_fiscal(element_tag):
         element = root.find(f'.//{element_tag}')
         if element is None: return {}
@@ -168,13 +294,12 @@ def parse_xml_nfe(xml_content: str) -> dict:
     emitente = extract_parte_fiscal('emit')
     destinatario = extract_parte_fiscal('dest')
 
-    # 4. Itens (det)
+    # Itens (det)
     itens = []
     for det in root.findall('.//det'):
         prod = det.find('.//prod')
         imposto = det.find('.//imposto')
 
-        # Extração de CST/CSOSN
         cst_csosn = ""
         icms_node = imposto.find('.//ICMS')
         if icms_node is not None:
@@ -186,7 +311,6 @@ def parse_xml_nfe(xml_content: str) -> dict:
                     cst_csosn = find_text('.//CSOSN', icms_subnode)
                     break
 
-        # Extração do vTotTrib para o item
         v_aprox_tributos = 0.0
         if imposto.find('.//impostoTrib') is not None:
              v_aprox_tributos = safe_float(find_text('.//vTotTrib', imposto.find('.//impostoTrib')))
@@ -201,8 +325,7 @@ def parse_xml_nfe(xml_content: str) -> dict:
             'valor_aprox_tributos': v_aprox_tributos,
         })
 
-
-    # 5. Montagem do Resultado Final
+    # Montagem do Resultado Final
     result = {
         'chave_acesso': chave_acesso,
         'modelo_documento': modelo_documento,
@@ -241,92 +364,17 @@ def check_for_missing_data(data_dict: dict) -> list:
     return warnings
 
 
-def extract_text_from_file(uploaded_file):
-    """
-    Processa o arquivo carregado (JPG/PNG ou PDF) e retorna o texto extraído
-    usando Tesseract OCR, com pré-processamento do OpenCV.
-    Se for PDF multipágina, concatena o texto de todas as páginas.
-    """
-    file_type = uploaded_file.type
-    uploaded_file.seek(0)
-
-    tesseract_config = '--psm 4'
-
-    # Lista para armazenar o texto de cada página
-    full_text_list = []
-    # Lista de imagens a serem processadas
-    images_to_process = []
-    img_to_display = None
-
-    # 1. Se for PDF (Múltiplas páginas)
-    if "pdf" in file_type:
-        try:
-            # Converte TODAS as páginas
-            images_to_process = convert_from_bytes(uploaded_file.read())
-
-            if not images_to_process:
-                return "ERRO_CONVERSAO: Não foi possível converter o PDF em imagem."
-
-            # Armazena apenas a primeira imagem para visualização na sidebar
-            img_to_display = images_to_process[0]
-
-        except Exception as e:
-            return f"ERRO_PDF: Verifique se 'poppler-utils' está instalado via packages.txt. Detalhes: {e}"
-
-    # 2. Se for Imagem (Página única)
-    elif "image" in file_type:
-        try:
-            img_to_display = Image.open(uploaded_file)
-            images_to_process.append(img_to_display)
-        except Exception as e:
-            return f"ERRO_IMAGEM: Falha na abertura da imagem. Detalhes: {e}"
-
-    else:
-        return "ERRO_TIPO_INVALIDO: Tipo de arquivo não suportado."
-
-    # --- PROCESSAMENTO ITERATIVO (OCR + PRÉ-PROCESSAMENTO) ---
-    if images_to_process:
-        try:
-            for i, image_pil in enumerate(images_to_process):
-                # 1. Pré-processamento (OpenCV)
-                img_for_ocr = preprocess_image_for_ocr(image_pil)
-
-                # 2. Executa o OCR no array numpy processado
-                text = pytesseract.image_to_string(img_for_ocr, lang='por', config=tesseract_config)
-
-                # Adiciona o texto com um separador
-                full_text_list.append(f"\n--- INÍCIO PÁGINA {i+1} ---\n\n" + text)
-
-            # Salva a primeira imagem para exibição na sidebar (se não for nula)
-            if img_to_display is not None:
-                st.session_state["image_to_display"] = img_to_display
-
-            # Retorna o texto concatenado
-            return "\n".join(full_text_list)
-
-        except pytesseract.TesseractNotFoundError:
-            return "ERRO_IMAGEM: O Tesseract não está instalado corretamente via packages.txt."
-        except Exception as e:
-            return f"ERRO_PROCESSAMENTO: Falha no OCR ou pré-processamento. Detalhes: {e}"
-
-    return "ERRO_FALHA_GERAL: Falha desconhecida na extração de texto."
-
-
 def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> tuple[dict, list]:
     """
     1. Executa fallback heurístico (Regex) para CFOP/CST/CSOSN em itens.
     2. Executa pós-validação comparando o total de itens com o total da nota.
-    Retorna o dicionário enriquecido e uma lista de mensagens para exibição.
     """
     enriched_data = data_dict.copy()
     itens_processados = []
     total_itens_calculado = 0.0
-    messages = [] # Lista de mensagens de auditoria para retorno
+    messages = []
 
-    # Padrões de Regex (CFOP e CST/CSOSN)
-    # CFOP: 4 dígitos obrigatórios (Ex: 5102)
     cfop_pattern = re.compile(r'\b(\d{4})\b')
-    # CST/CSOSN: 2 a 3 dígitos (Ex: 00, 102)
     cst_pattern = re.compile(r'\b(0\d{2}|[1-9]\d{1,2})\b')
 
     # 1. Fallback Heurístico (Regex) para Itens
@@ -336,7 +384,6 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> tuple[dict
         for item in enriched_data.get('itens', []):
             item_desc_lower = item['descricao'].lower()
 
-            # Converte valores para float e soma o total
             try:
                 item['valor_total'] = float(item['valor_total'])
             except (TypeError, ValueError):
@@ -346,7 +393,6 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> tuple[dict
 
             # Fallback para CFOP
             if not item.get('codigo_cfop') or len(item['codigo_cfop']) != 4:
-                # Busca CFOP na linha da descrição do item no texto bruto
                 match = cfop_pattern.search(item_desc_lower)
                 if match:
                     item['codigo_cfop'] = match.group(1)
@@ -354,7 +400,6 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> tuple[dict
 
             # Fallback para CST/CSOSN
             if not item.get('cst_csosn') or len(item['cst_csosn']) < 2:
-                # Busca CST/CSOSN na linha da descrição do item no texto bruto
                 match = cst_pattern.search(item_desc_lower)
                 if match:
                     item['cst_csosn'] = match.group(1)
@@ -362,16 +407,12 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> tuple[dict
 
             itens_processados.append(item)
 
-        # Atualiza a lista de itens enriquecida
         enriched_data['itens'] = itens_processados
-
 
     # 2. Pós-validação de Totais
     messages.append(("info", "Iniciando pós-validação de consistência de totais."))
 
     valor_total_nota = enriched_data.get('valor_total_nota', 0.0)
-
-    # Tolerância de 0.01 centavo (floating point errors)
     tolerance = 0.01
 
     soma_itens_formatada = formatar_moeda_imp(total_itens_calculado)
@@ -385,94 +426,51 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> tuple[dict
     return enriched_data, messages
 
 
-def get_image_brightness(image_np):
-    """Calcula o brilho médio da imagem (escala de cinza)."""
-    gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
-    return np.mean(gray)
+# =======================================================================
+# --- 4. CONFIGURAÇÃO LLM E PROMPT ---
+# =======================================================================
 
+system_prompt = (
+    "Você é um Agente de Extração Fiscal especializado em Notas Fiscais Eletrônicas (NF-e) e DANFE."
+    "Sua função é ler o texto bruto (OCR) de documentos fiscais e extrair os dados em formato JSON, "
+    "obedecendo rigorosamente o schema Pydantic fornecido."
+    "Siga estas regras estritas:"
+    "1. **Extração de Texto Bruto:** Se um campo estiver faltando ou for ilegível no texto OCR, preencha-o com uma string vazia (''), mas *nunca* invente dados."
+    "2. **Valores Numéricos (CRÍTICO - FORMATO BRASILEIRO):** Converta todos os valores monetários e quantias (que usam ponto como milhar e vírgula como decimal, ex: 1.234,56) para o formato `float` americano (ponto como separador decimal, sem separador de milhar, ex: 1234.56). "
+    "   - **Atenção:** Remova o separador de milhar (ponto ou espaço) e substitua a vírgula (,) pelo ponto (.)."
+    "3. **Datas:** Converta todas as datas para o formato estrito 'AAAA-MM-DD'."
+    "4. **Chave de Acesso:** A chave deve ser uma string de 44 dígitos (apenas números)."
+    "5. **Tabelas de Itens:** Preste **MÁXIMA ATENÇÃO** à leitura correta das colunas. O campo `valor_total` deve ser o **Valor Total do Item/Produto**, e **NÃO** o Valor de ICMS ou outro imposto."
+    "6. **Saída:** O resultado final deve ser **SOMENTE** o JSON, sem qualquer texto explicativo ou markdown adicional."
+)
 
-def preprocess_image_for_ocr(image_pil: Image.Image) -> np.ndarray:
-    """
-    Aplica pré-processamento (OpenCV) para aumentar a robustez do OCR.
-    Passos: Binarização adaptativa e Remoção de Ruído.
-    """
-    # 1. Converte PIL Image para array numpy (BGR)
-    image_np = np.array(image_pil.convert('RGB'))
-    image_np = image_np[:, :, ::-1].copy() # Converte RGB para BGR (formato OpenCV)
+parser = PydanticOutputParser(pydantic_object=NotaFiscal)
 
-    # 2. Converte para Escala de Cinza
-    gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
-
-    # 3. Alerta básico de qualidade (Brilho)
-    brightness = get_image_brightness(image_np)
-    if brightness < 80:
-        st.sidebar.warning(f"⚠️ Nota: Imagem escura (Brilho: {brightness:.0f}). A precisão do OCR pode ser afetada.")
-    elif brightness > 220:
-         st.sidebar.warning(f"⚠️ Nota: Imagem muito clara (Brilho: {brightness:.0f}). A precisão do OCR pode ser afetada.")
-
-    # 4. Suavização (Remoção de Ruído)
-    # A mediana é boa para ruído de sal e pimenta (digitalizações ruins)
-    denoised = cv2.medianBlur(gray, 3)
-
-    # 5. Binarização Adaptativa (Melhor para diferentes níveis de iluminação)
-    # Garante que texto em áreas claras e escuras seja extraído
-    processed_image = cv2.adaptiveThreshold(
-        denoised,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        11, # Tamanho do bloco
-        2   # Constante subtraída
-    )
-
-    return processed_image
-
-
-def formatar_moeda_imp(valor):
-    """Função auxiliar para formatar float como moeda brasileira (R$ X.XXX,XX)."""
-    if valor is None or valor == 0.0:
-        return "R$ 0,00"
-    # Lógica: substitui vírgula por X, ponto por vírgula, X por ponto.
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", system_prompt),
+        ("human", "Extraia os dados da nota fiscal no seguinte texto OCR. Retorne apenas o JSON. {format_instructions}\n\nTexto OCR:\n{text_to_analyze}"),
+    ]
+).partial(format_instructions=parser.get_format_instructions())
 
 
 # =======================================================================
-# --- 3. Configuração do Modelo e Função de Exibição (Streamlit) ---
+# --- 5. FUNÇÃO DE EXIBIÇÃO (STREAMLIT) ---
 # =======================================================================
-
-llm = None
-if "google_api_key" in st.secrets:
-    try:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=st.secrets["google_api_key"],
-            temperature=0.1
-        )
-        if "llm_ready" not in st.session_state:
-             st.session_state["llm_ready"] = True
-    except Exception as e:
-        st.error(f"Erro ao inicializar o modelo Gemini. Detalhes: {e}")
-        st.session_state["llm_ready"] = False
-else:
-    st.session_state["llm_ready"] = False
-
 
 def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[str] = None):
     """Exibe os resultados estruturados na tela principal, independentemente da fonte (XML ou LLM), e o Dashboard."""
 
     st.header(f"✅ Resultado da Extração Estruturada ({source})")
 
-    # 1. Pós-validação (Validação e Enriquecimento)
+    # 1. Pós-validação (Validação e Enriquecimento - Apenas para LLM/OCR)
     if source == "LLM/OCR" and ocr_text:
-        # Recebe o dicionário enriquecido E a lista de mensagens de auditoria
         data_dict, audit_messages = enrich_and_validate_extraction(data_dict, ocr_text)
 
         st.markdown("---")
         st.subheader("🛠️ Enriquecimento e Auditoria Pós-Extração")
 
-        # Itera sobre as mensagens e as exibe APENAS UMA VEZ
         for msg_type, msg_text in audit_messages:
-            # Renderiza as mensagens usando os comandos Streamlit corretos e ícones
             if msg_type == "info":
                 st.info(msg_text)
             elif msg_type == "success":
@@ -504,22 +502,12 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     total_icms = impostos_data.get('valor_total_icms', 0.0)
     total_ipi = impostos_data.get('valor_total_ipi', 0.0)
 
-    # Colunas para KPIs
     kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
-    # KPI 1: Valor Total da Nota
     kpi1.metric("Valor Total da NF", formatar_moeda_imp(valor_total).replace("R$ ", ""))
-
-    # KPI 2: Total de Tributos
     kpi2.metric("V. Aprox. Tributos", formatar_moeda_imp(total_tributos).replace("R$ ", ""))
-
-    # KPI 3: Total de ICMS
     kpi3.metric("Total ICMS", formatar_moeda_imp(total_icms).replace("R$ ", ""))
-
-    # KPI 4: Total de Itens
     kpi4.metric("Nº de Itens", total_itens)
-
-    # KPI 5: Inconsistências
     kpi5.metric("Inconsistências", len(quality_warnings), delta="Críticas encontradas", delta_color="inverse")
 
     st.markdown("---")
@@ -528,21 +516,16 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     # --- 4. DETALHES GERAIS DA NOTA ---
     st.subheader("Informações Principais")
 
-    # Cabeçalho da Nota
     col_data, col_valor, col_modelo, col_natureza = st.columns(4)
 
     col_data.metric("Data de Emissão", data_dict['data_emissao'])
-
-    # Reutiliza o valor total formatado, mas sem a label redundante
     col_valor.metric("Valor Total da Nota", formatar_moeda_imp(data_dict.get('valor_total_nota', 0.0)).replace("R$ ", ""))
-
     col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
     col_natureza.metric("Natureza da Operação", data_dict['natureza_operacao'])
 
 
     st.markdown("---")
 
-    # Chave de Acesso
     st.markdown("#### 🔑 **Chave de Acesso da NF-e**")
     st.code(data_dict['chave_acesso'], language="text")
 
@@ -565,13 +548,11 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     st.subheader("🛒 Itens da Nota Fiscal")
 
     itens_list = data_dict.get('itens', [])
+    df_itens = pd.DataFrame()
 
     if itens_list:
-
-        # Cria DataFrame para Tabela e Gráfico
         df_itens = pd.DataFrame(itens_list)
 
-        # Garante que as colunas numéricas estejam no formato correto para o gráfico
         for col in ['quantidade', 'valor_unitario', 'valor_total', 'valor_aprox_tributos']:
             df_itens[col] = pd.to_numeric(df_itens[col], errors='coerce').fillna(0.0)
 
@@ -591,12 +572,10 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             width='stretch'
         )
 
-        # Gráfico de Distribuição por CFOP
         st.markdown("### 📈 Distribuição de Valor por CFOP")
-        # Agrupa pelo CFOP e soma o valor total
         df_cfop = df_itens.groupby('codigo_cfop', dropna=False)['valor_total'].sum().reset_index()
         df_cfop.columns = ['CFOP', 'Valor Total']
-        # Cria o gráfico de barras interativo (Plotly)
+
         fig = px.bar(
             df_cfop,
             x='CFOP',
@@ -606,19 +585,17 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             color='CFOP',
             title='Valor de Produtos/Serviços agrupado por CFOP'
         )
-        # Formata o texto do gráfico para moeda
         fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
         fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
 
-    # 7. Exibição dos Totais de Impostos (Mantido)
+    # 7. Exibição dos Totais de Impostos
     st.markdown("---")
     st.subheader("💰 Totais de Impostos e Despesas")
 
-    # Lógica de cálculo/desempate de tributos
-    total_tributos_calculado = df_itens['valor_aprox_tributos'].sum() if 'df_itens' in locals() else 0.0
+    total_tributos_calculado = df_itens['valor_aprox_tributos'].sum() if not df_itens.empty else 0.0
     total_tributos_extraido_direto = impostos_data.get('valor_aprox_tributos', 0.0)
 
     # LÓGICA DE DESEMPATE CRÍTICA:
@@ -642,7 +619,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     col_outras.metric("Outras Despesas", formatar_moeda_imp(impostos_data.get('valor_outras_despesas')))
     col_aprox.metric(f"Total V. Aprox. Tributos{fonte_tributos}", formatar_moeda_imp(total_final_tributos))
 
-    # 8. Edição Manual Assistida (Mantido)
+    # 8. Edição Manual Assistida
     icms_zerado = impostos_data.get('valor_total_icms', 0.0) <= 0.0
     ipi_zerado = impostos_data.get('valor_total_ipi', 0.0) <= 0.0
 
@@ -670,5 +647,126 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             data_dict['totais_impostos']['valor_total_ipi'] = float(ipi_manual.replace(",", "."))
             data_dict['totais_impostos']['valor_total_pis'] = float(pis_manual.replace(",", "."))
             data_dict['totais_impostos']['valor_total_cofins'] = float(cofins_manual.replace(",", "."))
+            st.success("Valores de impostos atualizados para o JSON de download.")
         except ValueError:
             st.error("Erro: Certifique-se de que os valores inseridos manualmente são números válidos.")
+
+    # 9. Botões de Download (JSON e CSV)
+    st.markdown("---")
+    col_json_btn, col_csv_btn = st.columns(2)
+
+    try:
+        nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
+        data_emissao_nome = data_dict['data_emissao']
+    except (KeyError, IndexError, TypeError):
+        nome_curto = "extraida"
+        data_emissao_nome = "data_desconhecida"
+
+    json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
+    col_json_btn.download_button(
+        label="⬇️ Baixar JSON COMPLETO da Extração",
+        data=json_data,
+        file_name=f"nf_{data_emissao_nome}_{nome_curto}.json",
+        mime="application/json",
+        use_container_width=True
+    )
+
+    if not df_itens.empty:
+        csv_data = df_itens.to_csv(index=False).encode('utf-8')
+        col_csv_btn.download_button(
+            label="⬇️ Baixar Itens em CSV",
+            data=csv_data,
+            file_name=f"itens_{data_emissao_nome}_{nome_curto}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+    with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
+         st.json(data_dict)
+
+
+# =======================================================================
+# --- 6. LÓGICA PRINCIPAL DO APP (STREAMLIT) ---
+# =======================================================================
+
+st.title("Análise e Extração Estruturada de Dados 🧠")
+
+if not st.session_state.get("llm_ready"):
+    st.error("⚠️ Erro: A chave 'google_api_key' não foi encontrada nos secrets do Streamlit. O Extrator de PDF/Imagem (LLM/OCR) está desativado. Apenas a extração de XML está funcional.")
+
+uploaded_file = st.file_uploader(
+    "📥 Escolha um arquivo (XML, PDF, PNG, JPG) para análise",
+    type=["xml", "pdf", "png", "jpg", "jpeg"]
+)
+
+if uploaded_file is not None:
+
+    file_type = uploaded_file.type
+
+    with st.spinner(f"Processando arquivo ({uploaded_file.name})..."):
+
+        # --- FLUXO 1: XML (Prioridade Máxima) ---
+        if "xml" in file_type:
+            uploaded_file.seek(0)
+            xml_content = uploaded_file.read().decode('utf-8')
+            data_dict = parse_xml_nfe(xml_content)
+
+            if "error" in data_dict:
+                st.error(data_dict["error"])
+            else:
+                try:
+                    # Valida a estrutura completa com Pydantic (Garantia de conformidade)
+                    NotaFiscal(**data_dict)
+                    display_extraction_results(data_dict, source="XML")
+                except ValidationError as ve:
+                    st.error(f"Erro de Validação Pydantic ao ler XML: {ve}")
+                    st.info("O XML foi processado, mas falhou na validação do esquema Pydantic. Use o JSON Bruto para debug.")
+                    display_extraction_results(data_dict, source="XML")
+
+        # --- FLUXO 2: OCR/LLM (PDF/Imagem) ---
+        elif st.session_state.get("llm_ready"):
+
+            # 1. Extração de texto bruto (OCR)
+            text_to_analyze = extract_text_from_file(uploaded_file)
+            response = None
+
+            if text_to_analyze.startswith("ERRO_"):
+                 st.error(f"Erro na extração de texto (OCR): {text_to_analyze}")
+                 st.markdown("Verifique se as dependências (poppler-utils, tesseract) estão instaladas corretamente.")
+            else:
+                # 2. Miniatura da Imagem na Sidebar
+                if "image_to_display" in st.session_state:
+                    st.sidebar.success("Imagem carregada e OCR inicial concluído.")
+                    with st.sidebar.expander("🔎 Visualizar Nota Fiscal"):
+                        st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", width='stretch')
+
+                try:
+                    # 3. Execução do LLM
+                    final_prompt = prompt.format(text_to_analyze=text_to_analyze)
+                    response = llm.invoke(final_prompt)
+                    extracted_data = parser.parse(response.content)
+
+                    # 4. Pós-processamento e Enriquecimento
+                    data_dict = extracted_data.model_dump()
+
+                    # 5. CHAMA A FUNÇÃO DE DISPLAY
+                    display_extraction_results(data_dict, source="LLM/OCR", ocr_text=text_to_analyze)
+
+                except ValidationError as ve:
+                    st.error("Houve um erro de validação (Pydantic). O Gemini pode ter retornado um JSON malformado.")
+                    if response is not None:
+                        with st.expander("Ver Resposta Bruta do LLM (JSON malformado)", expanded=True):
+                            st.code(response.content, language='json')
+                    st.warning(f"Detalhes do Erro: {ve}")
+
+                except Exception as e:
+                    st.error(f"Houve um erro geral durante a interpretação pelo Gemini. Detalhes: {e}")
+                    if 'response' in locals() and response is not None:
+                         with st.expander("Ver Resposta Bruta do LLM", expanded=False):
+                            st.code(response.content, language='text')
+                    with st.expander("Ver Texto OCR Bruto"):
+                        st.code(text_to_analyze, language="text")
+        else:
+            st.warning("O arquivo é uma imagem/PDF, mas o processamento LLM está desativado (sem Google API Key).")
+            
+# --- Fim do Código ---
