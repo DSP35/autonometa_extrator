@@ -39,7 +39,8 @@ class ParteFiscal(BaseModel):
     cnpj_cpf: str = Field(description="CNPJ ou CPF da parte fiscal (apenas dígitos).")
     
     nome_razao: str = Field(
-        description="Nome ou Razão Social completa."
+        description="Nome ou Razão Social completa.",
+        validation_alias='nome_raza'
     )
     
     endereco_completo: str = Field(description="Endereço completo (Rua, Número, Bairro, Cidade, Estado).")
