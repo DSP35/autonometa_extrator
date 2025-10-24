@@ -9,6 +9,8 @@ from io import BytesIO
 import json                
 import os
 import xml.etree.ElementTree as ET # NOVO: Import para XML
+import cv2 
+import numpy as np
 
 # --- Imports LangChain e Pydantic ---
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -236,23 +238,26 @@ def check_for_missing_data(data_dict: dict) -> list:
 def extract_text_from_file(uploaded_file):
     """
     Processa o arquivo carregado (JPG/PNG ou PDF) e retorna o texto extraído
-    usando Tesseract OCR, com PSM 4 para melhor leitura de tabelas.
+    usando Tesseract OCR, com pré-processamento do OpenCV.
     """
     file_type = uploaded_file.type
     uploaded_file.seek(0)
     
     tesseract_config = '--psm 4' 
     
+    # Inicializa img_for_ocr como None
+    img_for_ocr = None
+    img_to_display = None
+    
     # 1. Se for PDF
     if "pdf" in file_type:
         try:
+            # Converte apenas a primeira página
             images = convert_from_bytes(uploaded_file.read(), first_page=1, last_page=1)
             if not images:
                 return "ERRO_CONVERSAO: Não foi possível converter o PDF em imagem."
             
-            text = pytesseract.image_to_string(images[0], lang='por', config=tesseract_config) 
-            st.session_state["image_to_display"] = images[0]
-            return text
+            img_to_display = images[0]
             
         except Exception as e:
             return f"ERRO_PDF: Verifique se 'poppler-utils' está instalado via packages.txt. Detalhes: {e}"
@@ -260,17 +265,76 @@ def extract_text_from_file(uploaded_file):
     # 2. Se for Imagem
     elif "image" in file_type:
         try:
-            img = Image.open(uploaded_file)
-            text = pytesseract.image_to_string(img, lang='por', config=tesseract_config)
-            st.session_state["image_to_display"] = img
+            img_to_display = Image.open(uploaded_file)
+        except Exception as e:
+            return f"ERRO_IMAGEM: Falha na abertura da imagem. Detalhes: {e}"
+            
+    else:
+        return "ERRO_TIPO_INVALIDO: Tipo de arquivo não suportado."
+    
+    # --- NOVO: PRÉ-PROCESSAMENTO (Se a imagem foi gerada/aberta) ---
+    if img_to_display:
+        try:
+            # A imagem binarizada do OpenCV é enviada para o Tesseract
+            img_for_ocr = preprocess_image_for_ocr(img_to_display)
+            
+            # Executa o OCR no array numpy processado
+            text = pytesseract.image_to_string(img_for_ocr, lang='por', config=tesseract_config) 
+            
+            # Salva a imagem original para exibição na sidebar
+            st.session_state["image_to_display"] = img_to_display 
             return text
+
         except pytesseract.TesseractNotFoundError:
             return "ERRO_IMAGEM: O Tesseract não está instalado corretamente via packages.txt."
         except Exception as e:
-            return f"ERRO_IMAGEM: Falha na extração da imagem. Detalhes: {e}"
+            return f"ERRO_PROCESSAMENTO: Falha no OCR ou pré-processamento. Detalhes: {e}"
             
-    return "ERRO_TIPO_INVALIDO: Tipo de arquivo não suportado."
+    return "ERRO_FALHA_GERAL: Falha desconhecida na extração de texto."
 
+# --- Função Auxiliar: Checagem de Brilho ---
+def get_image_brightness(image_np):
+    """Calcula o brilho médio da imagem (escala de cinza)."""
+    gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+    return np.mean(gray)
+
+# --- Função Central: Pré-processamento de Imagem (OpenCV) ---
+def preprocess_image_for_ocr(image_pil: Image.Image) -> np.ndarray:
+    """
+    Aplica pré-processamento (OpenCV) para aumentar a robustez do OCR.
+    Passos: Binarização adaptativa e Remoção de Ruído.
+    """
+    
+    # 1. Converte PIL Image para array numpy (BGR)
+    image_np = np.array(image_pil.convert('RGB'))
+    image_np = image_np[:, :, ::-1].copy() # Converte RGB para BGR (formato OpenCV)
+    
+    # 2. Converte para Escala de Cinza
+    gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+    
+    # 3. Alerta básico de qualidade (Brilho)
+    brightness = get_image_brightness(image_np)
+    if brightness < 80:
+        st.sidebar.warning(f"⚠️ Nota: Imagem escura (Brilho: {brightness:.0f}). A precisão do OCR pode ser afetada.")
+    elif brightness > 220:
+         st.sidebar.warning(f"⚠️ Nota: Imagem muito clara (Brilho: {brightness:.0f}). A precisão do OCR pode ser afetada.")
+         
+    # 4. Suavização (Remoção de Ruído)
+    # A mediana é boa para ruído de sal e pimenta (digitalizações ruins)
+    denoised = cv2.medianBlur(gray, 3) 
+    
+    # 5. Binarização Adaptativa (Melhor para diferentes níveis de iluminação)
+    # Garante que texto em áreas claras e escuras seja extraído
+    processed_image = cv2.adaptiveThreshold(
+        denoised, 
+        255, 
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY, 
+        11, # Tamanho do bloco
+        2   # Constante subtraída
+    )
+    
+    return processed_image
 
 # --- Funções Auxiliares ---
 def formatar_moeda_imp(valor):
