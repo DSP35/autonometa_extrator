@@ -1,9 +1,11 @@
 streamlit
-pillow
-pypdf 
-pdf2image
 pytesseract
-langchain-core
+pillow
+pdf2image
+opencv-python-headless
+numpy
 langchain
 langchain-google-genai
 pydantic
+lxml
+reportlab
