@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET # NOVO: Import para XML
 import cv2 
 import numpy as np
 import re
+import pandas as pd
+import plotly.express as px
 
 # --- Imports LangChain e Pydantic ---
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -462,12 +464,20 @@ else:
 
 
 # --- FUNÇÃO DE EXIBIÇÃO DE RESULTADOS (UNIFICADA) ---
-def display_extraction_results(data_dict: dict, source: str):
-    """Exibe os resultados estruturados na tela principal, independentemente da fonte (XML ou LLM)."""
+def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[str] = None):
+    """Exibe os resultados estruturados na tela principal, independentemente da fonte (XML ou LLM), e o Dashboard."""
     
-    # 1. Cabeçalho e Qualidade
     st.header(f"✅ Resultado da Extração Estruturada ({source})")
     
+    # 1. Pós-validação (Reaproveitando a chamada para exibir os alertas do Ponto 3)
+    # A validação e o enriquecimento precisam ser feitos primeiro
+    if source == "LLM/OCR" and ocr_text:
+        # Re-executa o enriquecimento do Ponto 3 para garantir que os alertas sejam exibidos
+        data_dict = enrich_and_validate_extraction(data_dict, ocr_text) 
+        
+    st.markdown("---")
+    
+    # 2. Checagem de Qualidade (Ponto 3)
     quality_warnings = check_for_missing_data(data_dict)
     
     if quality_warnings:
@@ -476,16 +486,48 @@ def display_extraction_results(data_dict: dict, source: str):
             for warning in quality_warnings:
                 st.markdown(warning)
 
+    
+    # --- 3. DASHBOARD: KPIs e Indicadores (Ponto 5) ---
+    st.subheader("📊 Resumo Fiscal (KPIs)")
+    
+    impostos_data = data_dict.get('totais_impostos', {})
+    valor_total = data_dict.get('valor_total_nota', 0.0)
+    total_itens = len(data_dict.get('itens', []))
+    total_tributos = impostos_data.get('valor_aprox_tributos', 0.0) # Assume-se que o Ponto 3 populou o melhor valor
+    total_icms = impostos_data.get('valor_total_icms', 0.0)
+    total_ipi = impostos_data.get('valor_total_ipi', 0.0)
+    
+    # Colunas para KPIs
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    
+    # KPI 1: Valor Total da Nota
+    kpi1.metric("Valor Total da NF", formatar_moeda_imp(valor_total).replace("R$ ", ""))
+    
+    # KPI 2: Total de Tributos
+    kpi2.metric("V. Aprox. Tributos", formatar_moeda_imp(total_tributos).replace("R$ ", ""))
+
+    # KPI 3: Total de ICMS
+    kpi3.metric("Total ICMS", formatar_moeda_imp(total_icms).replace("R$ ", ""))
+    
+    # KPI 4: Total de Itens
+    kpi4.metric("Nº de Itens", total_itens)
+    
+    # KPI 5: Inconsistências
+    kpi5.metric("Inconsistências", len(quality_warnings), delta="Críticas encontradas", delta_color="inverse")
+    
+    st.markdown("---")
+    
+    
+    # --- 4. DETALHES GERAIS DA NOTA ---
     st.subheader("Informações Principais")
     
-    # 2. Cabeçalho da Nota com st.columns e st.metric
+    # Cabeçalho da Nota (mantendo o st.columns original)
     col_data, col_valor, col_modelo, col_natureza = st.columns(4)
     
     col_data.metric("Data de Emissão", data_dict['data_emissao'])
     
-    # Remove R$ da métrica de valor para usar formatar_moeda_imp
-    valor_formatado = formatar_moeda_imp(data_dict.get('valor_total_nota', 0.0)).replace("R$ ", "") 
-    col_valor.metric("Valor Total da Nota", valor_formatado)
+    # Reutiliza o valor total formatado, mas sem a label redundante
+    col_valor.metric("Valor Total da Nota", formatar_moeda_imp(data_dict.get('valor_total_nota', 0.0)).replace("R$ ", "")) 
     
     col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
     col_natureza.metric("Natureza da Operação", data_dict['natureza_operacao'])
@@ -493,14 +535,14 @@ def display_extraction_results(data_dict: dict, source: str):
 
     st.markdown("---")
     
-    # 3. Chave de Acesso
+    # Chave de Acesso
     st.markdown("#### 🔑 **Chave de Acesso da NF-e**")
     st.code(data_dict['chave_acesso'], language="text")
 
     st.markdown("---")
     
     
-    # 4. Emitente e Destinatário
+    # 5. Detalhes do Emitente e Destinatário
     col_emitente, col_destinatario = st.columns(2)
     
     with col_emitente.expander("🏢 Detalhes do Emitente", expanded=False):
@@ -512,20 +554,22 @@ def display_extraction_results(data_dict: dict, source: str):
         st.json(destinatario_data)
 
 
-    # 5. Tabela de Itens
+    # 6. Tabela de Itens
     st.subheader("🛒 Itens da Nota Fiscal")
     
     itens_list = data_dict.get('itens', [])
-    total_tributos_calculado = 0.0
-
+    
     if itens_list:
-        for item in itens_list:
-            valor = item.get('valor_aprox_tributos', 0.0)
-            if isinstance(valor, (int, float)):
-                 total_tributos_calculado += valor
+        
+        # Cria DataFrame para Tabela e Gráfico
+        df_itens = pd.DataFrame(itens_list)
+        
+        # Garante que as colunas numéricas estejam no formato correto para o gráfico
+        for col in ['quantidade', 'valor_unitario', 'valor_total', 'valor_aprox_tributos']:
+            df_itens[col] = pd.to_numeric(df_itens[col], errors='coerce').fillna(0.0)
 
         st.dataframe(
-            itens_list,
+            df_itens,
             column_order=["descricao", "quantidade", "valor_unitario", "valor_total", "codigo_cfop", "cst_csosn", "valor_aprox_tributos"],
             column_config={
                 "descricao": st.column_config.Column("Descrição do Item", width="large"),
@@ -539,15 +583,41 @@ def display_extraction_results(data_dict: dict, source: str):
             hide_index=True,
             width='stretch'
         )
+        
+        # --- NOVO: Gráfico de Distribuição por CFOP (Ponto 5) ---
+        st.markdown("### 📈 Distribuição de Valor por CFOP")
+        # Agrupa pelo CFOP e soma o valor total
+        df_cfop = df_itens.groupby('codigo_cfop', dropna=False)['valor_total'].sum().reset_index()
+        df_cfop.columns = ['CFOP', 'Valor Total']
+        
+        # Cria o gráfico de barras interativo (Plotly)
+        fig = px.bar(
+            df_cfop, 
+            x='CFOP', 
+            y='Valor Total', 
+            text='Valor Total',
+            labels={'Valor Total': 'Valor Total (R$)', 'CFOP': 'Código Fiscal de Operações'},
+            color='CFOP',
+            title='Valor de Produtos/Serviços agrupado por CFOP'
+        )
+        # Formata o texto do gráfico para moeda
+        fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
+        fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        
     else:
         st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
 
 
-    # 6. Exibição dos Totais de Impostos
+    # 7. Exibição dos Totais de Impostos (Mantido)
     st.markdown("---")
     st.subheader("💰 Totais de Impostos e Despesas")
 
-    impostos_data = data_dict.get('totais_impostos', {})
+    # A lógica de cálculo/desempate de tributos é mantida, mas agora usa o dicionário final
+    
+    total_tributos_calculado = df_itens['valor_aprox_tributos'].sum() if 'df_itens' in locals() else 0.0
     total_tributos_extraido_direto = impostos_data.get('valor_aprox_tributos', 0.0)
 
     # LÓGICA DE DESEMPATE CRÍTICA:
@@ -577,7 +647,7 @@ def display_extraction_results(data_dict: dict, source: str):
     col_aprox.metric(f"Total V. Aprox. Tributos{fonte_tributos}", formatar_moeda_imp(total_final_tributos))
     
     
-    # 7. Edição Manual Assistida
+    # 8. Edição Manual Assistida (Mantido)
     icms_zerado = impostos_data.get('valor_total_icms', 0.0) <= 0.0
     ipi_zerado = impostos_data.get('valor_total_ipi', 0.0) <= 0.0
     
@@ -593,7 +663,6 @@ def display_extraction_results(data_dict: dict, source: str):
 
         col_edit_icms, col_edit_ipi, col_edit_pis, col_edit_cofins = st.columns(4)
         
-        # Usando chaves para garantir que os inputs sejam independentes
         key_suffix = source.lower().replace("/", "_")
         
         icms_manual = col_edit_icms.text_input("ICMS", value=icms_val, key=f"manual_icms_{key_suffix}")
@@ -611,23 +680,43 @@ def display_extraction_results(data_dict: dict, source: str):
             
         except ValueError:
             st.error("Por favor, insira apenas números válidos nos campos de edição.")
+            
+        # Re-atualiza o dicionário final com os inputs manuais
+        final_data_dict = data_dict
 
-    # 8. Botão de Download
+
+    # --- 9. Botões de Download (JSON e NOVO: CSV) ---
     st.markdown("---")
+    col_json_btn, col_csv_btn = st.columns(2)
     
     try:
         nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
+        data_emissao_nome = data_dict['data_emissao']
     except (KeyError, IndexError, TypeError):
         nome_curto = "extraida"
+        data_emissao_nome = "data_desconhecida"
 
+    # Botão de Download JSON
     json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
-    st.download_button(
+    col_json_btn.download_button(
         label="⬇️ Baixar JSON COMPLETO da Extração",
         data=json_data,
-        file_name=f"nf_{data_dict['data_emissao']}_{nome_curto}.json",
-        mime="application/json"
+        file_name=f"nf_{data_emissao_nome}_{nome_curto}.json",
+        mime="application/json",
+        use_container_width=True
     )
-
+    
+    # Botão de Download CSV (Apenas dos Itens)
+    if 'df_itens' in locals() and not df_itens.empty:
+        csv_data = df_itens.to_csv(index=False).encode('utf-8')
+        col_csv_btn.download_button(
+            label="⬇️ Baixar Itens em CSV",
+            data=csv_data,
+            file_name=f"itens_{data_emissao_nome}_{nome_curto}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    
     with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
          st.json(data_dict)
 
@@ -774,8 +863,7 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
         final_data_dict = enrich_and_validate_extraction(data_dict, text_to_analyze)
             
         # CHAMA A FUNÇÃO DE DISPLAY APÓS SUCESSO DO LLM E ENRIQUECIMENTO
-        display_extraction_results(final_data_dict, source="LLM/OCR")
-        # Fim do bloco de sucesso do LLM
+        display_extraction_results(data_dict, source="LLM/OCR", ocr_text=text_to_analyze)
 
     except ValidationError as ve:
         st.error("Houve um erro de validação (Pydantic). O Gemini pode ter retornado um JSON malformado.")
