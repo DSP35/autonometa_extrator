@@ -8,9 +8,9 @@ from pdf2image import convert_from_bytes
 from io import BytesIO
 import json                
 import os
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET # NOVO: Import para XML
 
-# --- Imports LangChain e Pydantic (CORRIGIDOS) ---
+# --- Imports LangChain e Pydantic ---
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate        
 from langchain_core.output_parsers import PydanticOutputParser 
@@ -59,7 +59,6 @@ class NotaFiscal(BaseModel):
     modelo_documento: str = Field(description="Modelo do documento fiscal (Ex: NF-e, NFS-e, Cupom).")
     data_emissao: str = Field(description="Data de emissão da nota fiscal no formato YYYY-MM-DD.")
     valor_total_nota: float = Field(description="Valor total FINAL da nota fiscal (somatório de tudo).")
-    # NOVO CAMPO ADICIONADO: Natureza da Operação
     natureza_operacao: str = Field(description="Descrição da natureza da operação (Ex: Venda de Mercadoria, Remessa para Armazém Geral).")
     
     emitente: ParteFiscal = Field(description="Dados completos do emitente (quem vendeu/prestou o serviço).")
@@ -69,7 +68,8 @@ class NotaFiscal(BaseModel):
 
     itens: list[ItemNota] = Field(description="Lista completa de todos os produtos ou serviços discriminados na nota, seguindo o esquema ItemNota.")
 
-# --- Função de Parsing de XML ---
+
+# --- Função de Parsing de XML (Novo) ---
 def parse_xml_nfe(xml_content: str) -> dict:
     """
     Processa o conteúdo XML de uma NF-e e extrai os dados diretamente 
@@ -209,6 +209,7 @@ def parse_xml_nfe(xml_content: str) -> dict:
     
     return result
 
+
 # --- Função de Checagem de Qualidade ---
 def check_for_missing_data(data_dict: dict) -> list:
     """Verifica se há dados críticos faltantes ou zerados e retorna uma lista de avisos."""
@@ -272,6 +273,15 @@ def extract_text_from_file(uploaded_file):
     return "ERRO_TIPO_INVALIDO: Tipo de arquivo não suportado."
 
 
+# --- Funções Auxiliares ---
+def formatar_moeda_imp(valor):
+    """Função auxiliar para formatar float como moeda brasileira (R$ X.XXX,XX)."""
+    if valor is None or valor == 0.0:
+        return "R$ 0,00"
+    # Lógica: substitui vírgula por X, ponto por vírgula, X por ponto.
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 # --- Configuração do Modelo Gemini ---
 llm = None
 if "google_api_key" in st.secrets:
@@ -290,34 +300,190 @@ else:
     st.session_state["llm_ready"] = False
 
 
+# --- FUNÇÃO DE EXIBIÇÃO DE RESULTADOS (UNIFICADA) ---
+def display_extraction_results(data_dict: dict, source: str):
+    """Exibe os resultados estruturados na tela principal, independentemente da fonte (XML ou LLM)."""
+    
+    # 1. Cabeçalho e Qualidade
+    st.header(f"✅ Resultado da Extração Estruturada ({source})")
+    
+    quality_warnings = check_for_missing_data(data_dict)
+    
+    if quality_warnings:
+        st.warning("⚠️ Atenção: Diversas informações críticas estão faltando ou ilegíveis na nota fiscal. Isso geralmente ocorre devido à má qualidade da digitalização.")
+        with st.expander("Clique para ver os campos faltantes ou zerados"):
+            for warning in quality_warnings:
+                st.markdown(warning)
+
+    st.subheader("Informações Principais")
+    
+    # 2. Cabeçalho da Nota com st.columns e st.metric
+    col_data, col_valor, col_modelo, col_natureza = st.columns(4)
+    
+    col_data.metric("Data de Emissão", data_dict['data_emissao'])
+    
+    # Remove R$ da métrica de valor para usar formatar_moeda_imp
+    valor_formatado = formatar_moeda_imp(data_dict.get('valor_total_nota', 0.0)).replace("R$ ", "") 
+    col_valor.metric("Valor Total da Nota", valor_formatado)
+    
+    col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
+    col_natureza.metric("Natureza da Operação", data_dict['natureza_operacao'])
+
+
+    st.markdown("---")
+    
+    # 3. Chave de Acesso
+    st.markdown("#### 🔑 **Chave de Acesso da NF-e**")
+    st.code(data_dict['chave_acesso'], language="text")
+
+    st.markdown("---")
+    
+    
+    # 4. Emitente e Destinatário
+    col_emitente, col_destinatario = st.columns(2)
+    
+    with col_emitente.expander("🏢 Detalhes do Emitente", expanded=False):
+        emitente_data = data_dict.get('emitente', {})
+        st.json(emitente_data)
+
+    with col_destinatario.expander("👤 Detalhes do Destinatário", expanded=False):
+        destinatario_data = data_dict.get('destinatario', {})
+        st.json(destinatario_data)
+
+
+    # 5. Tabela de Itens
+    st.subheader("🛒 Itens da Nota Fiscal")
+    
+    itens_list = data_dict.get('itens', [])
+    total_tributos_calculado = 0.0
+
+    if itens_list:
+        for item in itens_list:
+            valor = item.get('valor_aprox_tributos', 0.0)
+            if isinstance(valor, (int, float)):
+                 total_tributos_calculado += valor
+
+        st.dataframe(
+            itens_list,
+            column_order=["descricao", "quantidade", "valor_unitario", "valor_total", "codigo_cfop", "cst_csosn", "valor_aprox_tributos"],
+            column_config={
+                "descricao": st.column_config.Column("Descrição do Item", width="large"),
+                "quantidade": st.column_config.NumberColumn("Qtde"),
+                "valor_unitario": st.column_config.NumberColumn("Valor Unit.", format="R$ %.2f"),
+                "valor_total": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
+                "codigo_cfop": st.column_config.Column("CFOP"),
+                "cst_csosn": st.column_config.Column("CST/CSOSN"),
+                "valor_aprox_tributos": st.column_config.NumberColumn("V. Aprox. Tributos", format="R$ %.2f")
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+    else:
+        st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
+
+
+    # 6. Exibição dos Totais de Impostos
+    st.markdown("---")
+    st.subheader("💰 Totais de Impostos e Despesas")
+
+    impostos_data = data_dict.get('totais_impostos', {})
+    total_tributos_extraido_direto = impostos_data.get('valor_aprox_tributos', 0.0)
+
+    # LÓGICA DE DESEMPATE CRÍTICA:
+    if total_tributos_calculado > 0.0:
+        total_final_tributos = total_tributos_calculado
+        fonte_tributos = " (Calculado dos Itens)"
+    elif total_tributos_extraido_direto > 0.0:
+        total_final_tributos = total_tributos_extraido_direto
+        fonte_tributos = " (Extraído dos Dados Adicionais)"
+    else:
+        total_final_tributos = 0.0
+        fonte_tributos = ""
+
+
+    col_icms, col_ipi, col_pis, col_cofins, col_outras, col_aprox = st.columns(6)
+
+    col_icms.metric("Base ICMS", formatar_moeda_imp(impostos_data.get('base_calculo_icms')))
+    col_icms.metric("Total ICMS", formatar_moeda_imp(impostos_data.get('valor_total_icms')))
+
+    col_ipi.metric("Total IPI", formatar_moeda_imp(impostos_data.get('valor_total_ipi')))
+
+    col_pis.metric("Total PIS", formatar_moeda_imp(impostos_data.get('valor_total_pis')))
+    col_cofins.metric("Total COFINS", formatar_moeda_imp(impostos_data.get('valor_total_cofins')))
+
+    col_outras.metric("Outras Despesas", formatar_moeda_imp(impostos_data.get('valor_outras_despesas')))
+
+    col_aprox.metric(f"Total V. Aprox. Tributos{fonte_tributos}", formatar_moeda_imp(total_final_tributos))
+    
+    
+    # 7. Edição Manual Assistida
+    icms_zerado = impostos_data.get('valor_total_icms', 0.0) <= 0.0
+    ipi_zerado = impostos_data.get('valor_total_ipi', 0.0) <= 0.0
+    
+    if icms_zerado or ipi_zerado:
+        st.markdown("---")
+        st.subheader("✍️ Edição Manual de Impostos")
+        st.info("O Agente LLM não conseguiu extrair os valores detalhados. Se a nota contém esses valores, insira-os abaixo.")
+        
+        icms_val = str(impostos_data.get('valor_total_icms', 0.0))
+        ipi_val = str(impostos_data.get('valor_total_ipi', 0.0))
+        pis_val = str(impostos_data.get('valor_total_pis', 0.0))
+        cofins_val = str(impostos_data.get('valor_total_cofins', 0.0))
+
+        col_edit_icms, col_edit_ipi, col_edit_pis, col_edit_cofins = st.columns(4)
+        
+        # Usando chaves para garantir que os inputs sejam independentes
+        key_suffix = source.lower().replace("/", "_")
+        
+        icms_manual = col_edit_icms.text_input("ICMS", value=icms_val, key=f"manual_icms_{key_suffix}")
+        ipi_manual = col_edit_ipi.text_input("IPI", value=ipi_val, key=f"manual_ipi_{key_suffix}")
+        pis_manual = col_edit_pis.text_input("PIS", value=pis_val, key=f"manual_pis_{key_suffix}")
+        cofins_manual = col_edit_cofins.text_input("COFINS", value=cofins_val, key=f"manual_cofins_{key_suffix}")
+        
+        try:
+            # Atualiza o data_dict para o download
+            data_dict['totais_impostos']['valor_total_icms'] = float(icms_manual.replace(",", "."))
+            data_dict['totais_impostos']['valor_total_ipi'] = float(ipi_manual.replace(",", "."))
+            data_dict['totais_impostos']['valor_total_pis'] = float(pis_manual.replace(",", "."))
+            data_dict['totais_impostos']['valor_total_cofins'] = float(cofins_manual.replace(",", "."))
+            st.success("Valores de impostos atualizados para o JSON de download.")
+            
+        except ValueError:
+            st.error("Por favor, insira apenas números válidos nos campos de edição.")
+
+    # 8. Botão de Download
+    st.markdown("---")
+    
+    try:
+        nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
+    except (KeyError, IndexError, TypeError):
+        nome_curto = "extraida"
+
+    json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
+    st.download_button(
+        label="⬇️ Baixar JSON COMPLETO da Extração",
+        data=json_data,
+        file_name=f"nf_{data_dict['data_emissao']}_{nome_curto}.json",
+        mime="application/json"
+    )
+
+    with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
+         st.json(data_dict)
+
+
 # --- Configuração da Interface Streamlit ---
 st.set_page_config(page_title="Extrator Autonometa", layout="wide")
-st.title("🤖 Extrator Autonometa (OCR + LLM) de Notas Fiscais")
+st.title("🤖 Extrator Autonometa (OCR/XML + LLM) de Notas Fiscais")
 st.markdown("---")
 
-# --- NOVO: Adição do Logo na Sidebar ---
-st.sidebar.markdown(
-    """
-    <div style="text-align: center;">
-        <img src="https://i.imgur.com/oH1wbZ4.png" width="150">
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+# --- Logo na Sidebar ---
+st.sidebar.image("https://i.imgur.com/oH1wbZ4.png")
 
 # --- 1. Botão de Carregamento na Sidebar ---
 st.sidebar.header("Upload da Nota Fiscal (1/2)")
 
 uploaded_file = st.sidebar.file_uploader(
-    "Escolha a Nota Fiscal (JPG, PNG ou PDF):",
-    type=['png', 'jpg', 'jpeg', 'pdf']
-)
-
-parser = PydanticOutputParser(pydantic_object=NotaFiscal)
-
-
-uploaded_file = st.sidebar.file_uploader(
-    "Escolha a Nota Fiscal (JPG, PNG, PDF ou XML):", # Texto do label atualizado
+    "Escolha a Nota Fiscal (JPG, PNG, PDF ou XML):",
     type=['png', 'jpg', 'jpeg', 'pdf', 'xml']
 )
 
@@ -343,6 +509,10 @@ if uploaded_file is not None:
             with st.spinner("Analisando e estruturando dados do XML..."):
                 # Chama a nova função de parsing
                 xml_data_dict = parse_xml_nfe(xml_content)
+                
+                # Validação Pydantic para garantir que o XML segue o schema
+                NotaFiscal(**xml_data_dict)
+                
                 st.session_state["extracted_data_xml"] = xml_data_dict
                 st.session_state["xml_processed"] = True # Sinaliza sucesso
             
@@ -352,7 +522,7 @@ if uploaded_file is not None:
             display_extraction_results(xml_data_dict, source="XML")
 
         except Exception as e:
-            st.error(f"Erro ao processar o arquivo XML. O arquivo pode estar malformado. Detalhes: {e}")
+            st.error(f"Erro ao processar o arquivo XML. O arquivo pode estar malformado ou não seguir o schema NF-e. Detalhes: {e}")
             st.session_state["xml_processed"] = False
             
     # --- PROCESSAMENTO DE IMAGEM/PDF (OCR + LLM) ---
@@ -387,180 +557,6 @@ if uploaded_file is not None:
             else:
                 st.error("⚠️ O Agente Gemini não está pronto. Verifique sua `google_api_key`.")
 
-# --- FUNÇÃO DE EXIBIÇÃO DE RESULTADOS (UNIFICADA) ---
-def display_extraction_results(data_dict: dict, source: str):
-    """Exibe os resultados estruturados na tela principal, independentemente da fonte (XML ou LLM)."""
-    
-    st.header(f"✅ Resultado da Extração Estruturada ({source})")
-    
-    # --- Verificação de Qualidade ---
-    quality_warnings = check_for_missing_data(data_dict)
-    
-    if quality_warnings:
-        st.warning("⚠️ Atenção: Diversas informações críticas estão faltando ou ilegíveis na nota fiscal. Isso geralmente ocorre devido à má qualidade da digitalização.")
-        with st.expander("Clique para ver os campos faltantes ou zerados"):
-            for warning in quality_warnings:
-                st.markdown(warning)
-
-    st.subheader("Informações Principais")
-    
-    # --- 4.1 Cabeçalho da Nota com st.columns e st.metric ---
-    col_data, col_valor, col_modelo, col_natureza = st.columns(4)
-    
-    # Métrica 1: Data de Emissão
-    col_data.metric("Data de Emissão", data_dict['data_emissao'])
-    
-    # Métrica 2: Valor Total
-    valor_formatado = formatar_moeda_imp(data_dict.get('valor_total_nota', 0.0)).replace("R$", "")
-    col_valor.metric("Valor Total da Nota", valor_formatado)
-    
-    # Métrica 3: Modelo Fiscal
-    col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
-    
-    # Métrica 4: Natureza da Operação
-    col_natureza.metric("Natureza da Operação", data_dict['natureza_operacao'])
-
-
-    st.markdown("---")
-    
-    # --- Chave de Acesso (Identificador) ---
-    st.markdown("#### 🔑 **Chave de Acesso da NF-e**")
-    st.code(data_dict['chave_acesso'], language="text")
-
-    st.markdown("---")
-    
-    
-    # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
-    col_emitente, col_destinatario = st.columns(2)
-    
-    with col_emitente.expander("🏢 Detalhes do Emitente", expanded=False):
-        emitente_data = data_dict.get('emitente', {})
-        st.json(emitente_data)
-
-    with col_destinatario.expander("👤 Detalhes do Destinatário", expanded=False):
-        destinatario_data = data_dict.get('destinatario', {})
-        st.json(destinatario_data)
-
-
-    # --- 4.3 Tabela de Itens ---
-    st.subheader("🛒 Itens da Nota Fiscal")
-    
-    itens_list = data_dict.get('itens', [])
-    total_tributos_calculado = 0.0
-
-    if itens_list:
-        for item in itens_list:
-            valor = item.get('valor_aprox_tributos', 0.0)
-            if isinstance(valor, (int, float)):
-                 total_tributos_calculado += valor
-
-        st.dataframe(
-            itens_list,
-            column_order=["descricao", "quantidade", "valor_unitario", "valor_total", "codigo_cfop", "cst_csosn", "valor_aprox_tributos"],
-            column_config={
-                "descricao": st.column_config.Column("Descrição do Item", width="large"),
-                "quantidade": st.column_config.NumberColumn("Qtde"),
-                "valor_unitario": st.column_config.NumberColumn("Valor Unit.", format="R$ %.2f"),
-                "valor_total": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
-                "codigo_cfop": st.column_config.Column("CFOP"),
-                "cst_csosn": st.column_config.Column("CST/CSOSN"),
-                "valor_aprox_tributos": st.column_config.NumberColumn("V. Aprox. Tributos", format="R$ %.2f")
-            },
-            hide_index=True,
-            use_container_width=True
-        )
-    else:
-        st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
-
-
-    # --- 4.4 Exibição dos Totais de Impostos (Com Lógica de Desempate e Edição) ---
-    st.markdown("---")
-    st.subheader("💰 Totais de Impostos e Despesas")
-
-    impostos_data = data_dict.get('totais_impostos', {})
-    total_tributos_extraido_direto = impostos_data.get('valor_aprox_tributos', 0.0)
-
-    # LÓGICA DE DESEMPATE CRÍTICA:
-    if total_tributos_calculado > 0.0:
-        total_final_tributos = total_tributos_calculado
-        fonte_tributos = " (Calculado dos Itens)"
-    elif total_tributos_extraido_direto > 0.0:
-        total_final_tributos = total_tributos_extraido_direto
-        fonte_tributos = " (Extraído dos Dados Adicionais)"
-    else:
-        total_final_tributos = 0.0
-        fonte_tributos = ""
-
-
-    col_icms, col_ipi, col_pis, col_cofins, col_outras, col_aprox = st.columns(6)
-
-    col_icms.metric("Base ICMS", formatar_moeda_imp(impostos_data.get('base_calculo_icms')))
-    col_icms.metric("Total ICMS", formatar_moeda_imp(impostos_data.get('valor_total_icms')))
-
-    col_ipi.metric("Total IPI", formatar_moeda_imp(impostos_data.get('valor_total_ipi')))
-
-    col_pis.metric("Total PIS", formatar_moeda_imp(impostos_data.get('valor_total_pis')))
-    col_cofins.metric("Total COFINS", formatar_moeda_imp(impostos_data.get('valor_total_cofins')))
-
-    col_outras.metric("Outras Despesas", formatar_moeda_imp(impostos_data.get('valor_outras_despesas')))
-
-    col_aprox.metric(f"Total V. Aprox. Tributos{fonte_tributos}", formatar_moeda_imp(total_final_tributos))
-    
-    
-    # --- Edição Manual Assistida de Impostos Zerados ---
-    icms_zerado = impostos_data.get('valor_total_icms', 0.0) <= 0.0
-    ipi_zerado = impostos_data.get('valor_total_ipi', 0.0) <= 0.0
-    
-    if icms_zerado or ipi_zerado:
-        st.markdown("---")
-        st.subheader("✍️ Edição Manual de Impostos")
-        st.info("O Agente LLM não conseguiu extrair os valores detalhados. Se a nota contém esses valores, insira-os abaixo.")
-        
-        # Use o objeto pydantic para definir os valores iniciais (pode ser necessário um .get() seguro)
-        icms_val = str(impostos_data.get('valor_total_icms', 0.0))
-        ipi_val = str(impostos_data.get('valor_total_ipi', 0.0))
-        pis_val = str(impostos_data.get('valor_total_pis', 0.0))
-        cofins_val = str(impostos_data.get('valor_total_cofins', 0.0))
-
-        col_edit_icms, col_edit_ipi, col_edit_pis, col_edit_cofins = st.columns(4)
-        
-        # Usando chaves para garantir que os inputs sejam independentes
-        key_suffix = source.lower() # Suffix para evitar conflito de keys entre XML e LLM
-        
-        icms_manual = col_edit_icms.text_input("ICMS", value=icms_val, key=f"manual_icms_{key_suffix}")
-        ipi_manual = col_edit_ipi.text_input("IPI", value=ipi_val, key=f"manual_ipi_{key_suffix}")
-        pis_manual = col_edit_pis.text_input("PIS", value=pis_val, key=f"manual_pis_{key_suffix}")
-        cofins_manual = col_edit_cofins.text_input("COFINS", value=cofins_val, key=f"manual_cofins_{key_suffix}")
-        
-        try:
-            # Atualiza o data_dict para o download
-            data_dict['totais_impostos']['valor_total_icms'] = float(icms_manual.replace(",", "."))
-            data_dict['totais_impostos']['valor_total_ipi'] = float(ipi_manual.replace(",", "."))
-            data_dict['totais_impostos']['valor_total_pis'] = float(pis_manual.replace(",", "."))
-            data_dict['totais_impostos']['valor_total_cofins'] = float(cofins_manual.replace(",", "."))
-            st.success("Valores de impostos atualizados para o JSON de download.")
-            
-        except ValueError:
-            st.error("Por favor, insira apenas números válidos nos campos de edição.")
-
-    # --- Botão de Download ---
-    st.markdown("---")
-    
-    try:
-        nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
-    except (KeyError, IndexError, TypeError):
-        nome_curto = "extraida"
-
-    json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
-    st.download_button(
-        label="⬇️ Baixar JSON COMPLETO da Extração",
-        data=json_data,
-        file_name=f"nf_{data_dict['data_emissao']}_{nome_curto}.json",
-        mime="application/json"
-    )
-
-    with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
-         st.json(data_dict)
 
 # --- Seção de Execução da Extração (LLM - Execução Inline) ---
 if st.session_state.get("run_llm_extraction", False) and st.session_state.get("llm_ready", False):
@@ -614,187 +610,6 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
         data_dict = extracted_data.model_dump()
         display_extraction_results(data_dict, source="LLM/OCR")
         # Fim do bloco de sucesso do LLM
-
-    except ValidationError as ve:
-        st.error("Houve um erro de validação (Pydantic). O Gemini pode ter retornado um JSON malformado.")
-        if response is not None:
-            with st.expander("Ver Resposta Bruta do LLM (JSON malformado)", expanded=True):
-                st.code(response.content, language='json')
-        st.warning(f"Detalhes do Erro: {ve}")
-
-    except Exception as e:
-        st.error(f"Houve um erro geral durante a interpretação pelo Gemini. Detalhes: {e}")
-        if 'response' in locals() and response is not None:
-            with st.expander("Ver Resposta Bruta do LLM (Debugging)", expanded=True):
-                st.code(response.content, language='json')
-        
-st.markdown("---")
-
-        st.subheader("Informações Principais")
-        
-        # --- 4.1 Cabeçalho da Nota com st.columns e st.metric (ATUALIZADO) ---
-        # 4 colunas: Data, Valor, Modelo, Natureza da Operação
-        col_data, col_valor, col_modelo, col_natureza = st.columns(4)
-        
-        # Métrica 1: Data de Emissão
-        col_data.metric("Data de Emissão", data_dict['data_emissao'])
-        
-        # Métrica 2: Valor Total
-        valor_formatado = f"R$ {data_dict['valor_total_nota']:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        col_valor.metric("Valor Total da Nota", valor_formatado)
-        
-        # Métrica 3: Modelo Fiscal
-        col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
-        
-        # Métrica 4: Natureza da Operação (NOVO)
-        col_natureza.metric("Natureza da Operação", data_dict['natureza_operacao'])
-
-
-        st.markdown("---")
-        
-        # --- Chave de Acesso (Identificador) (ATUALIZADO) ---
-        st.markdown("#### 🔑 **Chave de Acesso da NF-e**")
-        st.code(data_dict['chave_acesso'], language="text")
-
-        st.markdown("---")
-        
-        
-        # --- 4.2 Detalhes do Emitente e Destinatário com st.expander ---
-        col_emitente, col_destinatario = st.columns(2)
-        
-        with col_emitente.expander("🏢 Detalhes do Emitente", expanded=False):
-            emitente_data = data_dict.get('emitente', {})
-            st.json(emitente_data)
-
-        with col_destinatario.expander("👤 Detalhes do Destinatário", expanded=False):
-            destinatario_data = data_dict.get('destinatario', {})
-            st.json(destinatario_data)
-
-
-        # --- 4.3 Tabela de Itens ---
-        st.subheader("🛒 Itens da Nota Fiscal")
-        
-        itens_list = data_dict.get('itens', [])
-        total_tributos_calculado = 0.0
-
-        if itens_list:
-            for item in itens_list:
-                valor = item.get('valor_aprox_tributos', 0.0)
-                if isinstance(valor, (int, float)):
-                     total_tributos_calculado += valor
-
-            st.dataframe(
-                itens_list,
-                column_order=["descricao", "quantidade", "valor_unitario", "valor_total", "codigo_cfop", "cst_csosn", "valor_aprox_tributos"],
-                column_config={
-                    "descricao": st.column_config.Column("Descrição do Item", width="large"),
-                    "quantidade": st.column_config.NumberColumn("Qtde"),
-                    "valor_unitario": st.column_config.NumberColumn("Valor Unit.", format="R$ %.2f"),
-                    "valor_total": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
-                    "codigo_cfop": st.column_config.Column("CFOP"),
-                    "cst_csosn": st.column_config.Column("CST/CSOSN"),
-                    "valor_aprox_tributos": st.column_config.NumberColumn("V. Aprox. Tributos", format="R$ %.2f")
-                },
-                hide_index=True,
-                use_container_width=True
-            )
-        else:
-            st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
-
-
-        # --- 4.4 Exibição dos Totais de Impostos (Com Lógica de Desempate e Edição) ---
-        st.markdown("---")
-        st.subheader("💰 Totais de Impostos e Despesas")
-
-        impostos_data = data_dict.get('totais_impostos', {})
-        total_tributos_extraido_direto = impostos_data.get('valor_aprox_tributos', 0.0)
-
-        # LÓGICA DE DESEMPATE CRÍTICA:
-        if total_tributos_calculado > 0.0:
-            total_final_tributos = total_tributos_calculado
-            fonte_tributos = " (Calculado dos Itens)"
-        elif total_tributos_extraido_direto > 0.0:
-            total_final_tributos = total_tributos_extraido_direto
-            fonte_tributos = " (Extraído dos Dados Adicionais)"
-        else:
-            total_final_tributos = 0.0
-            fonte_tributos = ""
-
-
-        col_icms, col_ipi, col_pis, col_cofins, col_outras, col_aprox = st.columns(6)
-
-        def formatar_moeda_imp(valor):
-            """Função auxiliar para formatar float como moeda brasileira (R$ X.XXX,XX)."""
-            if valor is None or valor == 0.0:
-                return "R$ 0,00"
-            # Lógica: substitui vírgula por X, ponto por vírgula, X por ponto.
-            return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-        col_icms.metric("Base ICMS", formatar_moeda_imp(impostos_data.get('base_calculo_icms')))
-        col_icms.metric("Total ICMS", formatar_moeda_imp(impostos_data.get('valor_total_icms')))
-
-        col_ipi.metric("Total IPI", formatar_moeda_imp(impostos_data.get('valor_total_ipi')))
-
-        col_pis.metric("Total PIS", formatar_moeda_imp(impostos_data.get('valor_total_pis')))
-        col_cofins.metric("Total COFINS", formatar_moeda_imp(impostos_data.get('valor_total_cofins')))
-
-        col_outras.metric("Outras Despesas", formatar_moeda_imp(impostos_data.get('valor_outras_despesas')))
-
-        col_aprox.metric(f"Total V. Aprox. Tributos{fonte_tributos}", formatar_moeda_imp(total_final_tributos))
-        
-        
-        # --- Edição Manual Assistida de Impostos Zerados ---
-        icms_zerado = impostos_data.get('valor_total_icms', 0.0) <= 0.0
-        ipi_zerado = impostos_data.get('valor_total_ipi', 0.0) <= 0.0
-        
-        if icms_zerado or ipi_zerado:
-            st.markdown("---")
-            st.subheader("✍️ Edição Manual de Impostos")
-            st.info("O Agente LLM não conseguiu extrair os valores detalhados. Se a nota contém esses valores, insira-os abaixo.")
-            
-            icms_val = str(impostos_data.get('valor_total_icms', 0.0))
-            ipi_val = str(impostos_data.get('valor_total_ipi', 0.0))
-            pis_val = str(impostos_data.get('valor_total_pis', 0.0))
-            cofins_val = str(impostos_data.get('valor_total_cofins', 0.0))
-
-            col_edit_icms, col_edit_ipi, col_edit_pis, col_edit_cofins = st.columns(4)
-            
-            icms_manual = col_edit_icms.text_input("ICMS", value=icms_val, key="manual_icms")
-            ipi_manual = col_edit_ipi.text_input("IPI", value=ipi_val, key="manual_ipi")
-            pis_manual = col_edit_pis.text_input("PIS", value=pis_val, key="manual_pis")
-            cofins_manual = col_edit_cofins.text_input("COFINS", value=cofins_val, key="manual_cofins")
-            
-            try:
-                # Atualiza o data_dict para o download
-                data_dict['totais_impostos']['valor_total_icms'] = float(icms_manual.replace(",", "."))
-                data_dict['totais_impostos']['valor_total_ipi'] = float(ipi_manual.replace(",", "."))
-                data_dict['totais_impostos']['valor_total_pis'] = float(pis_manual.replace(",", "."))
-                data_dict['totais_impostos']['valor_total_cofins'] = float(cofins_manual.replace(",", "."))
-                st.success("Valores de impostos atualizados para o JSON de download.")
-                
-            except ValueError:
-                st.error("Por favor, insira apenas números válidos nos campos de edição.")
-
-        # --- Botão de Download ---
-        st.markdown("---")
-        
-        try:
-            nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
-        except (KeyError, IndexError, TypeError):
-            nome_curto = "extraida"
-
-        json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
-        st.download_button(
-            label="⬇️ Baixar JSON COMPLETO da Extração",
-            data=json_data,
-            file_name=f"nf_{data_dict['data_emissao']}_{nome_curto}.json",
-            mime="application/json"
-        )
-
-        with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
-             st.json(data_dict)
-
 
     except ValidationError as ve:
         st.error("Houve um erro de validação (Pydantic). O Gemini pode ter retornado um JSON malformado.")
