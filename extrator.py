@@ -844,10 +844,11 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
                         "obedecendo rigorosamente o schema Pydantic fornecido."
                         "Siga estas regras estritas:"
                         "1. **Extração de Texto Bruto:** Se um campo estiver faltando ou for ilegível no texto OCR, preencha-o com uma string vazia (''), mas *nunca* invente dados."
-                        "2. **Valores Numéricos:** Converta todos os valores monetários e quantias para o formato `float` (ponto como separador decimal), sem formatação de moeda (ex: 5450.0)."
+                        "2. **Valores Numéricos (CRÍTICO - FORMATO BRASILEIRO):** Converta todos os valores monetários e quantias (que usam ponto como milhar e vírgula como decimal, ex: 1.234,56) para o formato `float` americano (ponto como separador decimal, sem separador de milhar, ex: 1234.56). "
+                        "   - **Atenção:** Remova o separador de milhar (ponto ou espaço) e substitua a vírgula (,) pelo ponto (.)."
                         "3. **Datas:** Converta todas as datas para o formato estrito 'AAAA-MM-DD'."
                         "4. **Chave de Acesso:** A chave deve ser uma string de 44 dígitos (apenas números)."
-                        "5. **Tabelas de Itens (CRÍTICO):** Ao extrair a lista de `itens`, preste **MÁXIMA ATENÇÃO** à leitura correta das colunas na tabela. O campo `valor_total` deve ser o **Valor Total do Item/Produto**, e **NÃO** o Valor do ICMS, IPI, ou qualquer outro imposto. Evite somar colunas adjacentes por engano."
+                        "5. **Tabelas de Itens:** Preste **MÁXIMA ATENÇÃO** à leitura correta das colunas. O campo `valor_total` deve ser o **Valor Total do Item/Produto**, e **NÃO** o Valor de ICMS ou outro imposto."
                         "6. **Saída:** O resultado final deve ser **SOMENTE** o JSON, sem qualquer texto explicativo ou markdown adicional."
                     ),
                     
