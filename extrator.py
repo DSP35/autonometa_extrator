@@ -11,6 +11,7 @@ import os
 import xml.etree.ElementTree as ET # NOVO: Import para XML
 import cv2 
 import numpy as np
+import re
 
 # --- Imports LangChain e Pydantic ---
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -306,6 +307,88 @@ def extract_text_from_file(uploaded_file):
             return f"ERRO_PROCESSAMENTO: Falha no OCR ou pré-processamento. Detalhes: {e}"
             
     return "ERRO_FALHA_GERAL: Falha desconhecida na extração de texto."
+
+# --- Função de Enriquecimento e Pós-Validação ---
+def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> dict:
+    """
+    1. Executa fallback heurístico (Regex) para CFOP/CST/CSOSN em itens.
+    2. Executa pós-validação comparando o total de itens com o total da nota.
+    """
+    
+    st.markdown("---")
+    st.subheader("🛠️ Enriquecimento e Auditoria Pós-Extração")
+    
+    enriched_data = data_dict.copy()
+    itens_processados = []
+    total_itens_calculado = 0.0
+
+    # Padrões de Regex (CFOP e CST/CSOSN)
+    # CFOP: 4 dígitos obrigatórios (Ex: 5102)
+    cfop_pattern = re.compile(r'\b(\d{4})\b')
+    # CST/CSOSN: 2 a 3 dígitos (Ex: 00, 102)
+    cst_pattern = re.compile(r'\b(0\d{2}|[1-9]\d{1,2})\b')
+    
+    # 1. Fallback Heurístico (Regex) para Itens
+    if ocr_text:
+        st.info("Iniciando enriquecimento heurístico para códigos fiscais (CFOP, CST/CSOSN).")
+        
+        # O OCR do Tesseract com PSM 4 geralmente coloca a tabela de itens em blocos
+        # Vamos tentar encontrar os padrões no texto bruto para cada item
+        
+        for item in enriched_data.get('itens', []):
+            item_desc_lower = item['descricao'].lower()
+            
+            # Converte valores para float e soma o total
+            try:
+                item['valor_total'] = float(item['valor_total'])
+            except (TypeError, ValueError):
+                 item['valor_total'] = 0.0
+                 
+            total_itens_calculado += item['valor_total']
+
+            
+            # Fallback para CFOP
+            if not item.get('codigo_cfop') or len(item['codigo_cfop']) != 4:
+                # Busca CFOP na linha da descrição do item no texto bruto
+                match = cfop_pattern.search(item_desc_lower)
+                if match:
+                    item['codigo_cfop'] = match.group(1)
+                    st.success(f"✅ CFOP do item '{item['descricao'][:20]}...' preenchido via Regex: **{item['codigo_cfop']}**")
+
+
+            # Fallback para CST/CSOSN
+            if not item.get('cst_csosn') or len(item['cst_csosn']) < 2:
+                # Busca CST/CSOSN na linha da descrição do item no texto bruto
+                match = cst_pattern.search(item_desc_lower)
+                if match:
+                    item['cst_csosn'] = match.group(1)
+                    st.success(f"✅ CST/CSOSN do item '{item['descricao'][:20]}...' preenchido via Regex: **{item['cst_csosn']}**")
+
+            itens_processados.append(item)
+    
+    # Atualiza a lista de itens enriquecida
+    enriched_data['itens'] = itens_processados
+    
+    
+    # 2. Pós-validação de Totais
+    
+    st.markdown("---")
+    st.info("Iniciando pós-validação de consistência de totais.")
+    
+    valor_total_nota = enriched_data.get('valor_total_nota', 0.0)
+    
+    # Tolerância de 0.01 centavo (floating point errors)
+    tolerance = 0.01 
+    
+    if abs(total_itens_calculado - valor_total_nota) <= tolerance:
+        st.success("👍 **Consistência Aprovada!** O somatório dos itens é consistente com o Valor Total da Nota.")
+        st.caption(f"Soma dos Itens: {formatar_moeda_imp(total_itens_calculado)} | Total NF: {formatar_moeda_imp(valor_total_nota)}")
+    else:
+        st.error("🚨 **ALERTA DE INCONSISTÊNCIA!** O somatório dos itens extraídos é diferente do Valor Total da Nota extraído.")
+        st.caption(f"Soma dos Itens: {formatar_moeda_imp(total_itens_calculado)} | Total NF: {formatar_moeda_imp(valor_total_nota)}")
+        st.warning("Recomendação: Verifique a qualidade do OCR ou edite os valores manualmente.")
+        
+    return enriched_data
 
 # --- Função Auxiliar: Checagem de Brilho ---
 def get_image_brightness(image_np):
@@ -684,9 +767,14 @@ if st.session_state.get("run_llm_extraction", False) and st.session_state.get("l
             response = llm.invoke(final_prompt)
             extracted_data = parser.parse(response.content)
             
-        # CHAMA A FUNÇÃO DE DISPLAY APÓS SUCESSO DO LLM
+        # --- NOVO: Enriquecimento e Pós-Validação ---
         data_dict = extracted_data.model_dump()
-        display_extraction_results(data_dict, source="LLM/OCR")
+        
+        # Chama a nova função com o dicionário e o texto bruto
+        final_data_dict = enrich_and_validate_extraction(data_dict, text_to_analyze)
+            
+        # CHAMA A FUNÇÃO DE DISPLAY APÓS SUCESSO DO LLM E ENRIQUECIMENTO
+        display_extraction_results(final_data_dict, source="LLM/OCR")
         # Fim do bloco de sucesso do LLM
 
     except ValidationError as ve:
