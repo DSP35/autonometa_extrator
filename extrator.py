@@ -1,626 +1,507 @@
 # Extrator Autonometa
 # Desenvolvido por David Parede
 
-import streamlit as st
-from PIL import Image
-import pytesseract         # OCR
-from pdf2image import convert_from_bytes
-from io import BytesIO
-import json                
-import os
-import xml.etree.ElementTree as ET # NOVO: Import para XML
-
-# --- Imports LangChain e Pydantic ---
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate        
-from langchain_core.output_parsers import PydanticOutputParser 
+import os, re, io, sys, json, tempfile, logging
+from typing import Dict, Any, List, Optional, Tuple
+import numpy as np
 from pydantic import BaseModel, Field, ValidationError
-from typing import Optional 
 
-# --- 1. Definindo o Schema de Saída (Estrutura da Nota Fiscal) ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("autonometa.extrator")
+TESSERACT_CMD = os.getenv("TESSERACT_CMD", "/usr/bin/tesseract")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 
-# Sub-estrutura para cada Item da Nota
-class ItemNota(BaseModel):
-    descricao: str = Field(description="Nome ou descrição completa do produto/serviço.")
-    quantidade: float = Field(description="Quantidade do item, convertida para um valor numérico (float).")
-    valor_unitario: float = Field(description="Valor unitário do item.")
-    valor_total: float = Field(description="Valor total da linha do item.")
-    codigo_cfop: str = Field(description="Código CFOP (Natureza da Operação) associado ao item, se disponível.")
-    cst_csosn: str = Field(description="Código CST (Situação Tributária) ou CSOSN do item, se disponível.")
-    valor_aprox_tributos: float = Field(description="Valor aproximado dos tributos incidentes sobre este item (Lei da Transparência).")
+class NotaItem(BaseModel):
+    descricao: str = Field("", description="Descrição do item")
+    ncm: Optional[str] = None
+    cfop: Optional[str] = None
+    quantidade: Optional[float] = None
+    valor_unitario: Optional[float] = None
+    valor_total: Optional[float] = None
 
-# Sub-estrutura para Emitente e Destinatário
-class ParteFiscal(BaseModel):
-    cnpj_cpf: str = Field(description="CNPJ ou CPF da parte fiscal (apenas dígitos).")
-    
-    nome_razao: str = Field(
-        description="Nome ou Razão Social completa."
-    )
-    
-    endereco_completo: str = Field(description="Endereço completo (Rua, Número, Bairro, Cidade, Estado).")
-    inscricao_estadual: str = Field(description="Inscrição Estadual, se disponível.")
-
-# Sub-estrutura para os Totais de Impostos (Nível de Nota - Híbrido)
-class TotaisImposto(BaseModel):
-    base_calculo_icms: float = Field(description="Valor total da Base de Cálculo do ICMS da nota.")
-    valor_total_icms: float = Field(description="Valor total do ICMS destacado na nota.")
-    valor_total_ipi: float = Field(description="Valor total do IPI destacado na nota.")
-    valor_total_pis: float = Field(description="Valor total do PIS destacado na nota.")
-    valor_total_cofins: float = Field(description="Valor total do COFINS destacado na nota.")
-    valor_outras_despesas: float = Field(description="Valor total de outras despesas acessórias (frete, seguro, etc.).")
-    valor_aprox_tributos: float = Field(description="Valor aproximado total dos tributos.") 
-
-# Estrutura Principal da Nota Fiscal
 class NotaFiscal(BaseModel):
-    """Estrutura Padrão e Completa dos Dados de uma Nota Fiscal."""
-    
-    chave_acesso: str = Field(description="Chave de Acesso da NF-e (44 dígitos), se presente.")
-    modelo_documento: str = Field(description="Modelo do documento fiscal (Ex: NF-e, NFS-e, Cupom).")
-    data_emissao: str = Field(description="Data de emissão da nota fiscal no formato YYYY-MM-DD.")
-    valor_total_nota: float = Field(description="Valor total FINAL da nota fiscal (somatório de tudo).")
-    natureza_operacao: str = Field(description="Descrição da natureza da operação (Ex: Venda de Mercadoria, Remessa para Armazém Geral).")
-    
-    emitente: ParteFiscal = Field(description="Dados completos do emitente (quem vendeu/prestou o serviço).")
-    destinatario: ParteFiscal = Field(description="Dados completos do destinatário (quem comprou/recebeu o serviço).")
-    
-    totais_impostos: TotaisImposto = Field(description="Valores totais de impostos e despesas acessórias da nota.")
+    chave_acesso: Optional[str] = None
+    emitente: Dict[str, Any] = Field(default_factory=dict)
+    destinatario: Dict[str, Any] = Field(default_factory=dict)
+    itens: List[NotaItem] = Field(default_factory=list)
+    impostos: Dict[str, Any] = Field(default_factory=dict)
+    metadados: Dict[str, Any] = Field(default_factory=dict)
 
-    itens: list[ItemNota] = Field(description="Lista completa de todos os produtos ou serviços discriminados na nota, seguindo o esquema ItemNota.")
+import numpy as _np
+def _variance_of_laplacian(gray):
+    import cv2
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
 
+def assess_image_quality(image_bgr):
+    import cv2, numpy as np
+    h, w = image_bgr.shape[:2]
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    sharp = _variance_of_laplacian(gray)
+    contrast = float(np.std(gray))
+    score = 0.0
+    if w * h >= 1024 * 768: score += 0.4
+    if sharp >= 100.0: score += 0.4
+    if contrast >= 30.0: score += 0.2
+    return {"width": int(w), "height": int(h), "sharpness": float(sharp), "contrast": float(contrast), "quality_score": float(score)}
 
-# --- Função de Parsing de XML (Novo) ---
-def parse_xml_nfe(xml_content: str) -> dict:
-    """
-    Processa o conteúdo XML de uma NF-e e extrai os dados diretamente 
-    para o formato de dicionário compatível com NotaFiscal.
-    """
-    
-    # 1. Parsing do XML
-    # Remove o namespace para facilitar o XPath
-    xml_content = xml_content.replace('xmlns="http://www.portalfiscal.inf.br/nfe"', '')
-    root = ET.fromstring(xml_content)
-    
-    # Define a função de busca segura (XPath simples)
-    def find_text(path, element=root, default=""):
-        node = element.find(path)
-        return node.text if node is not None else default
+def enhance_image(image_bgr):
+    import cv2
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    den = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+    eq = cv2.equalizeHist(den)
+    gauss = cv2.GaussianBlur(eq, (0, 0), 3)
+    usm = cv2.addWeighted(eq, 1.5, gauss, -0.5, 0)
+    th = cv2.adaptiveThreshold(usm, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10)
+    return cv2.cvtColor(th, cv2.COLOR_GRAY2BGR)
 
-    def safe_float(text):
-        try:
-            # Substitui vírgula por ponto para parsing
-            if isinstance(text, str):
-                 text = text.replace(',', '.') 
-            return float(text)
-        except (ValueError, TypeError):
-            return 0.0
-    
-    # 2. Dados de Cabeçalho (ide) e Totais
-    
-    # Caminho base para os dados da NF
-    infNFe = root.find('.//infNFe')
-    
-    # Dados Principais
-    chave_acesso = find_text('.//chNFe')
-    if not chave_acesso:
-         # Tenta a chave em Id
-         chave_acesso = find_text('.//Id', default="").replace('NFe', '')
-    
-    data_emissao = find_text('.//dhEmi') # datetime ISO
-    if not data_emissao:
-        data_emissao = find_text('.//dEmi') # date YYYY-MM-DD
-    
-    # Ajusta a data para YYYY-MM-DD
-    if data_emissao and len(data_emissao) > 10:
-        data_emissao = data_emissao[:10]
-        
-    modelo_documento = find_text('.//mod')
-    valor_total_nota = safe_float(find_text('.//vNF'))
-    natureza_operacao = find_text('.//natOp')
+def load_image(path):
+    import cv2
+    img = cv2.imread(path)
+    if img is None:
+        raise ValueError("Não foi possível carregar a imagem para OCR.")
+    return img
 
-    # Totais de Impostos (imposto/ICMSTot)
-    icms_tot = root.find('.//ICMSTot')
-    totais_impostos = {
-        'base_calculo_icms': safe_float(find_text('.//vBC', icms_tot)),
-        'valor_total_icms': safe_float(find_text('.//vICMS', icms_tot)),
-        'valor_total_ipi': safe_float(find_text('.//vIPI', icms_tot)),
-        'valor_total_pis': safe_float(find_text('.//vPIS', icms_tot)),
-        'valor_total_cofins': safe_float(find_text('.//vCOFINS', icms_tot)),
-        'valor_outras_despesas': safe_float(find_text('.//vOutro', icms_tot)),
-        # Valor aproximado dos tributos (vTotTrib)
-        'valor_aprox_tributos': safe_float(find_text('.//vTotTrib', icms_tot)),
+def pdf_to_images_all_pages(pdf_path):
+    from pdf2image import convert_from_path
+    pages = convert_from_path(pdf_path, dpi=300)
+    if not pages:
+        raise ValueError("PDF sem páginas legíveis.")
+    paths = []
+    for i, pg in enumerate(pages):
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f".p{i+1}.png")
+        pg.save(tmp.name, "PNG")
+        paths.append(tmp.name)
+    return paths
+
+def parse_nfe_xml(xml_bytes):
+    from lxml import etree
+    def _text(x): return x.text.strip() if x is not None and x.text else None
+    root = etree.fromstring(xml_bytes)
+    nsmap = root.nsmap.copy()
+    if None in nsmap: nsmap["n"] = nsmap.pop(None)
+    def find(path):
+        el = root.find(path, namespaces=nsmap)
+        if el is None and path.startswith(".//"):
+            el = root.find(path.replace(".//",""), namespaces=nsmap)
+        return el
+    def finds(path):
+        els = root.findall(path, namespaces=nsmap)
+        if not els and path.startswith(".//"):
+            els = root.findall(path.replace(".//",""), namespaces=nsmap)
+        return els
+
+    icmstot = find(".//n:ICMSTot") or find(".//ICMSTot")
+    emitente = {
+        "nome": _text(find(".//n:emit/n:xNome")) or _text(find(".//emit/xNome")),
+        "cnpj": _text(find(".//n:emit/n:CNPJ")) or _text(find(".//emit/CNPJ")),
+        "ie": _text(find(".//n:emit/n:IE")) or _text(find(".//emit/IE")),
+        "uf": _text(find(".//n:emit/n:enderEmit/n:UF")) or _text(find(".//emit/enderEmit/UF")),
+    }
+    destinatario = {
+        "nome": _text(find(".//n:dest/n:xNome")) or _text(find(".//dest/xNome")),
+        "cnpj": _text(find(".//n:dest/n:CNPJ")) or _text(find(".//dest/CNPJ")) or _text(find(".//n:dest/n:CPF")) or _text(find(".//dest/CPF")),
+        "ie": _text(find(".//n:dest/n:IE")) or _text(find(".//dest/IE")),
+        "uf": _text(find(".//n:dest/n:enderDest/n:UF")) or _text(find(".//dest/enderDest/UF")),
     }
 
-    # 3. Emitente (emit) e Destinatário (dest)
-
-    def extract_parte_fiscal(element_tag):
-        element = root.find(f'.//{element_tag}')
-        if element is None: return {}
-
-        cnpj_cpf = find_text('.//CNPJ', element) or find_text('.//CPF', element)
-        
-        ender = element.find('.//enderEmit') or element.find('.//enderDest')
-        
-        endereco_completo = ""
-        if ender is not None:
-             logradouro = find_text('.//xLgr', ender)
-             numero = find_text('.//nro', ender)
-             bairro = find_text('.//xBairro', ender)
-             municipio = find_text('.//xMun', ender)
-             uf = find_text('.//UF', ender)
-             endereco_completo = f"{logradouro}, {numero} - {bairro} - {municipio}/{uf}".strip() if all([logradouro, numero, municipio, uf]) else ""
-
-        return {
-            'cnpj_cpf': cnpj_cpf,
-            'nome_razao': find_text('.//xNome', element),
-            'endereco_completo': endereco_completo,
-            'inscricao_estadual': find_text('.//IE', element),
-        }
-
-    emitente = extract_parte_fiscal('emit')
-    destinatario = extract_parte_fiscal('dest')
-
-    # 4. Itens (det)
     itens = []
-    for det in root.findall('.//det'):
-        prod = det.find('.//prod')
-        imposto = det.find('.//imposto')
-        
-        # Extração de CST/CSOSN
-        cst_csosn = ""
-        icms_node = imposto.find('.//ICMS')
-        if icms_node is not None:
-            for icms_subnode in icms_node:
-                if 'CST' in icms_subnode.tag:
-                    cst_csosn = find_text('.//CST', icms_subnode)
-                    break
-                elif 'CSOSN' in icms_subnode.tag:
-                    cst_csosn = find_text('.//CSOSN', icms_subnode)
-                    break
-        
-        # Extração do vTotTrib para o item
-        v_aprox_tributos = 0.0
-        if imposto.find('.//impostoTrib') is not None:
-             v_aprox_tributos = safe_float(find_text('.//vTotTrib', imposto.find('.//impostoTrib')))
+    for det in finds(".//n:det") + finds(".//det"):
+        prod = det.find(".//n:prod", namespaces=nsmap) or det.find(".//prod")
+        if prod is None: continue
+        def fnum(v):
+            if v is None: return None
+            v = v.replace(",", ".")
+            try: return float(v)
+            except: return None
+        item = {
+            "descricao": _text(prod.find("n:xProd", namespaces=nsmap)) or _text(prod.find("xProd")) or "",
+            "ncm": _text(prod.find("n:NCM", namespaces=nsmap)) or _text(prod.find("NCM")),
+            "cfop": _text(prod.find("n:CFOP", namespaces=nsmap)) or _text(prod.find("CFOP")),
+            "quantidade": fnum(_text(prod.find("n:qCom", namespaces=nsmap)) or _text(prod.find("qCom"))),
+            "valor_unitario": fnum(_text(prod.find("n:vUnCom", namespaces=nsmap)) or _text(prod.find("vUnCom"))),
+            "valor_total": fnum(_text(prod.find("n:vProd", namespaces=nsmap)) or _text(prod.find("vProd"))),
+        }
+        itens.append(item)
 
-        itens.append({
-            'descricao': find_text('.//xProd', prod),
-            'quantidade': safe_float(find_text('.//qCom', prod)),
-            'valor_unitario': safe_float(find_text('.//vUnCom', prod)),
-            'valor_total': safe_float(find_text('.//vProd', prod)),
-            'codigo_cfop': find_text('.//CFOP', prod),
-            'cst_csosn': cst_csosn,
-            'valor_aprox_tributos': v_aprox_tributos,
-        })
+    def fnum(v):
+        if v is None: return None
+        v = v.replace(",", ".")
+        try: return float(v)
+        except: return None
 
-
-    # 5. Montagem do Resultado Final
-    result = {
-        'chave_acesso': chave_acesso,
-        'modelo_documento': modelo_documento,
-        'data_emissao': data_emissao,
-        'valor_total_nota': valor_total_nota,
-        'natureza_operacao': natureza_operacao,
-        'emitente': emitente,
-        'destinatario': destinatario,
-        'totais_impostos': totais_impostos,
-        'itens': itens,
+    impostos = {
+        "icms": fnum(_text(icmstot.find("n:vICMS", namespaces=nsmap)) if icmstot is not None else None),
+        "ipi": fnum(_text(icmstot.find("n:vIPI", namespaces=nsmap)) if icmstot is not None else None),
+        "pis": fnum(_text(icmstot.find("n:vPIS", namespaces=nsmap)) if icmstot is not None else None),
+        "cofins": fnum(_text(icmstot.find("n:vCOFINS", namespaces=nsmap)) if icmstot is not None else None),
     }
-    
-    return result
+    total_nf = fnum(_text(icmstot.find("n:vNF", namespaces=nsmap)) if icmstot is not None else None)
+    data = {
+        "chave_acesso": None,
+        "emitente": emitente,
+        "destinatario": destinatario,
+        "itens": itens,
+        "impostos": impostos,
+        "metadados": {"layout": "nfe_xml", "total_nf": total_nf}
+    }
+    return data
 
+def run_ocr(image_path):
+    try:
+        import pytesseract
+        from PIL import Image as PILImage
+        pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+        return pytesseract.image_to_string(PILImage.open(image_path), lang="por+eng")
+    except Exception as e:
+        logger.exception("Falha no OCR: %s", e); return ""
 
-# --- Função de Checagem de Qualidade ---
-def check_for_missing_data(data_dict: dict) -> list:
-    """Verifica se há dados críticos faltantes ou zerados e retorna uma lista de avisos."""
+PROMPT_TEMPLATE = """
+Você é um extrator de dados fiscais. A partir do TEXTO OCR abaixo, devolva um JSON válido com os campos:
+- chave_acesso (string ou null, 44 dígitos se existir)
+- emitente: {"nome": ..., "cnpj": ...}
+- destinatario: {"nome": ..., "cnpj": ...}
+- itens: lista de itens com campos: descricao, ncm, cfop, quantidade, valor_unitario, valor_total
+- impostos: {"icms":..., "ipi":..., "pis":..., "cofins":...}
+- metadados: {"layout": "<nfe_texto|nfce_texto|nfe_chave_44|desconhecido>"}
+Responda apenas o JSON, sem comentários.
+TEXTO OCR:
+{texto}
+"""
+
+def parse_with_llm(text):
+    if not GOOGLE_API_KEY: return None
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.prompts import ChatPromptTemplate
+        model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY, convert_system_message_to_human=True)
+        prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
+        chain = prompt | model
+        resp = chain.invoke({"texto": text})
+        content = getattr(resp, "content", str(resp)).strip()
+        if content.startswith("```"):
+            import re
+            content = re.sub(r"^```.*?\n", "", content, flags=re.S).rstrip("`").rstrip()
+        import json, re
+        try: return json.loads(content)
+        except: 
+            m = re.search(r"\{.*\}", content, re.S)
+            return json.loads(m.group(0)) if m else None
+    except Exception as e:
+        logger.warning("LLM indisponível (%s). Usando heurística.", e); return None
+
+def detect_layout(text):
+    import re
+    t = (text or "").lower()
+    if "chave de acesso" in t or "nfe" in t: return "nfe_texto"
+    if "nfce" in t or "nota fiscal eletrônica" in t: return "nfce_texto"
+    if re.search(r"\b\d{44}\b", t): return "nfe_chave_44"
+    return "desconhecido"
+
+def extract_tax_codes(text):
+    import re
+    text = text or ""
+    cfops = re.findall(r"\b([1-7]\d{3})\b", text)
+    cst = [m.group(1) for m in re.finditer(r"(?:CST[:\s]*)(\d{2,3})", text, re.I)]
+    ncm = re.findall(r"\b(\d{8})\b", text)
+    def dedup(seq):
+        out, seen = [], set()
+        for x in seq:
+            if x not in seen: seen.add(x); out.append(x)
+        return out
+    return {"cfop": dedup(cfops), "cst": dedup(cst), "ncm": dedup(ncm)}
+
+def parse_with_heuristics(text):
+    import re
+    layout = detect_layout(text)
+    data = {"chave_acesso": None, "emitente": {"nome": None, "cnpj": None}, "destinatario": {"nome": None, "cnpj": None},
+            "itens": [], "impostos": {}, "metadados": {"layout": layout}}
+    m = re.search(r"\b\d{44}\b", text or "")
+    if m: data["chave_acesso"] = m.group(0)
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    for ln in lines[:120]:
+        if any(k in ln.lower() for k in ["qtd","quantidade"]):
+            data["itens"].append({"descricao": ln, "ncm": None, "cfop": None, "quantidade": None, "valor_unitario": None, "valor_total": None})
+    return data
+
+def parse_text(text):
+    llm = parse_with_llm(text)
+    base = llm if llm is not None else parse_with_heuristics(text)
+    codes = extract_tax_codes(text)
+    base.setdefault("impostos", {})
+    base["impostos"].update({k: v for k, v in codes.items() if v})
+    return base
+
+def validate_to_model(data):
     warnings = []
-    
-    emitente = data_dict.get('emitente', {})
-    destinatario = data_dict.get('destinatario', {})
-
-    if not emitente.get('cnpj_cpf') or not emitente.get('nome_razao'):
-        warnings.append("❌ Dados completos do Emitente estão faltando ou ilegíveis.")
-    
-    if not destinatario.get('cnpj_cpf') or not destinatario.get('nome_razao'):
-        warnings.append("❌ Dados completos do Destinatário estão faltando ou ilegíveis.")
-
-    valor_total_nota = data_dict.get('valor_total_nota', 0.0)
-    if valor_total_nota <= 0.0:
-        warnings.append("❌ O 'Valor Total da Nota' está zerado (R$ 0,00).")
-    
-    if not data_dict.get('itens'):
-        warnings.append("❌ A lista de Itens/Produtos está vazia.")
-    
-    return warnings
-
-# --- Função Central de OCR (Lida com Imagem e PDF) ---
-def extract_text_from_file(uploaded_file):
-    """
-    Processa o arquivo carregado (JPG/PNG ou PDF) e retorna o texto extraído
-    usando Tesseract OCR, com PSM 4 para melhor leitura de tabelas.
-    """
-    file_type = uploaded_file.type
-    uploaded_file.seek(0)
-    
-    tesseract_config = '--psm 4' 
-    
-    # 1. Se for PDF
-    if "pdf" in file_type:
-        try:
-            images = convert_from_bytes(uploaded_file.read(), first_page=1, last_page=1)
-            if not images:
-                return "ERRO_CONVERSAO: Não foi possível converter o PDF em imagem."
-            
-            text = pytesseract.image_to_string(images[0], lang='por', config=tesseract_config) 
-            st.session_state["image_to_display"] = images[0]
-            return text
-            
-        except Exception as e:
-            return f"ERRO_PDF: Verifique se 'poppler-utils' está instalado via packages.txt. Detalhes: {e}"
-
-    # 2. Se for Imagem
-    elif "image" in file_type:
-        try:
-            img = Image.open(uploaded_file)
-            text = pytesseract.image_to_string(img, lang='por', config=tesseract_config)
-            st.session_state["image_to_display"] = img
-            return text
-        except pytesseract.TesseractNotFoundError:
-            return "ERRO_IMAGEM: O Tesseract não está instalado corretamente via packages.txt."
-        except Exception as e:
-            return f"ERRO_IMAGEM: Falha na extração da imagem. Detalhes: {e}"
-            
-    return "ERRO_TIPO_INVALIDO: Tipo de arquivo não suportado."
-
-
-# --- Funções Auxiliares ---
-def formatar_moeda_imp(valor):
-    """Função auxiliar para formatar float como moeda brasileira (R$ X.XXX,XX)."""
-    if valor is None or valor == 0.0:
-        return "R$ 0,00"
-    # Lógica: substitui vírgula por X, ponto por vírgula, X por ponto.
-    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-# --- Configuração do Modelo Gemini ---
-llm = None
-if "google_api_key" in st.secrets:
     try:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=st.secrets["google_api_key"],
-            temperature=0.1
-        )
-        if "llm_ready" not in st.session_state:
-             st.session_state["llm_ready"] = True
-    except Exception as e:
-        st.error(f"Erro ao inicializar o modelo Gemini. Detalhes: {e}")
-        st.session_state["llm_ready"] = False
-else:
-    st.session_state["llm_ready"] = False
+        if "itens" in data and isinstance(data["itens"], list):
+            norm = []
+            for i in data["itens"]:
+                if isinstance(i, dict): norm.append(NotaItem(**i).dict())
+                elif isinstance(i, NotaItem): norm.append(i.dict())
+            data["itens"] = norm
+        nf = NotaFiscal(**data)
+        if not nf.emitente.get("nome"): warnings.append("emitente.nome ausente")
+        if not nf.destinatario.get("nome"): warnings.append("destinatario.nome ausente")
+        return nf, warnings
+    except ValidationError as e:
+        warnings.append(f"Falha de validação: {e}")
+        return NotaFiscal(), warnings
 
+def process_document(path):
+    # XML
+    if path.lower().endswith((".xml",".nfe",".nfce",".cte",".mdfe")):
+        with open(path, "rb") as f: xml_bytes = f.read()
+        parsed = parse_nfe_xml(xml_bytes)
+        nf, warns = validate_to_model(parsed)
+        qm = {"width":0,"height":0,"sharpness":0,"contrast":0,"quality_score":1.0}
+        return {"nota_fiscal": nf.dict(), "qualidade_media": qm, "paginas": 1, "melhorada_em_quais": [], "avisos": warns, "instrucoes_qualidade": []}
 
-# --- FUNÇÃO DE EXIBIÇÃO DE RESULTADOS (UNIFICADA) ---
-def display_extraction_results(data_dict: dict, source: str):
-    """Exibe os resultados estruturados na tela principal, independentemente da fonte (XML ou LLM)."""
-    
-    # 1. Cabeçalho e Qualidade
-    st.header(f"✅ Resultado da Extração Estruturada ({source})")
-    
-    quality_warnings = check_for_missing_data(data_dict)
-    
-    if quality_warnings:
-        st.warning("⚠️ Atenção: Diversas informações críticas estão faltando ou ilegíveis na nota fiscal. Isso geralmente ocorre devido à má qualidade da digitalização.")
-        with st.expander("Clique para ver os campos faltantes ou zerados"):
-            for warning in quality_warnings:
-                st.markdown(warning)
+    # PDF ou Imagem
+    pages = [path]
+    if path.lower().endswith(".pdf"):
+        pages = pdf_to_images_all_pages(path)
 
-    st.subheader("Informações Principais")
-    
-    # 2. Cabeçalho da Nota com st.columns e st.metric
-    col_data, col_valor, col_modelo, col_natureza = st.columns(4)
-    
-    col_data.metric("Data de Emissão", data_dict['data_emissao'])
-    
-    # Remove R$ da métrica de valor para usar formatar_moeda_imp
-    valor_formatado = formatar_moeda_imp(data_dict.get('valor_total_nota', 0.0)).replace("R$ ", "") 
-    col_valor.metric("Valor Total da Nota", valor_formatado)
-    
-    col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
-    col_natureza.metric("Natureza da Operação", data_dict['natureza_operacao'])
-
-
-    st.markdown("---")
-    
-    # 3. Chave de Acesso
-    st.markdown("#### 🔑 **Chave de Acesso da NF-e**")
-    st.code(data_dict['chave_acesso'], language="text")
-
-    st.markdown("---")
-    
-    
-    # 4. Emitente e Destinatário
-    col_emitente, col_destinatario = st.columns(2)
-    
-    with col_emitente.expander("🏢 Detalhes do Emitente", expanded=False):
-        emitente_data = data_dict.get('emitente', {})
-        st.json(emitente_data)
-
-    with col_destinatario.expander("👤 Detalhes do Destinatário", expanded=False):
-        destinatario_data = data_dict.get('destinatario', {})
-        st.json(destinatario_data)
-
-
-    # 5. Tabela de Itens
-    st.subheader("🛒 Itens da Nota Fiscal")
-    
-    itens_list = data_dict.get('itens', [])
-    total_tributos_calculado = 0.0
-
-    if itens_list:
-        for item in itens_list:
-            valor = item.get('valor_aprox_tributos', 0.0)
-            if isinstance(valor, (int, float)):
-                 total_tributos_calculado += valor
-
-        st.dataframe(
-            itens_list,
-            column_order=["descricao", "quantidade", "valor_unitario", "valor_total", "codigo_cfop", "cst_csosn", "valor_aprox_tributos"],
-            column_config={
-                "descricao": st.column_config.Column("Descrição do Item", width="large"),
-                "quantidade": st.column_config.NumberColumn("Qtde"),
-                "valor_unitario": st.column_config.NumberColumn("Valor Unit.", format="R$ %.2f"),
-                "valor_total": st.column_config.NumberColumn("Valor Total", format="R$ %.2f"),
-                "codigo_cfop": st.column_config.Column("CFOP"),
-                "cst_csosn": st.column_config.Column("CST/CSOSN"),
-                "valor_aprox_tributos": st.column_config.NumberColumn("V. Aprox. Tributos", format="R$ %.2f")
-            },
-            hide_index=True,
-            use_container_width=True
-        )
-    else:
-        st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
-
-
-    # 6. Exibição dos Totais de Impostos
-    st.markdown("---")
-    st.subheader("💰 Totais de Impostos e Despesas")
-
-    impostos_data = data_dict.get('totais_impostos', {})
-    total_tributos_extraido_direto = impostos_data.get('valor_aprox_tributos', 0.0)
-
-    # LÓGICA DE DESEMPATE CRÍTICA:
-    if total_tributos_calculado > 0.0:
-        total_final_tributos = total_tributos_calculado
-        fonte_tributos = " (Calculado dos Itens)"
-    elif total_tributos_extraido_direto > 0.0:
-        total_final_tributos = total_tributos_extraido_direto
-        fonte_tributos = " (Extraído dos Dados Adicionais)"
-    else:
-        total_final_tributos = 0.0
-        fonte_tributos = ""
-
-
-    col_icms, col_ipi, col_pis, col_cofins, col_outras, col_aprox = st.columns(6)
-
-    col_icms.metric("Base ICMS", formatar_moeda_imp(impostos_data.get('base_calculo_icms')))
-    col_icms.metric("Total ICMS", formatar_moeda_imp(impostos_data.get('valor_total_icms')))
-
-    col_ipi.metric("Total IPI", formatar_moeda_imp(impostos_data.get('valor_total_ipi')))
-
-    col_pis.metric("Total PIS", formatar_moeda_imp(impostos_data.get('valor_total_pis')))
-    col_cofins.metric("Total COFINS", formatar_moeda_imp(impostos_data.get('valor_total_cofins')))
-
-    col_outras.metric("Outras Despesas", formatar_moeda_imp(impostos_data.get('valor_outras_despesas')))
-
-    col_aprox.metric(f"Total V. Aprox. Tributos{fonte_tributos}", formatar_moeda_imp(total_final_tributos))
-    
-    
-    # 7. Edição Manual Assistida
-    icms_zerado = impostos_data.get('valor_total_icms', 0.0) <= 0.0
-    ipi_zerado = impostos_data.get('valor_total_ipi', 0.0) <= 0.0
-    
-    if icms_zerado or ipi_zerado:
-        st.markdown("---")
-        st.subheader("✍️ Edição Manual de Impostos")
-        st.info("O Agente LLM não conseguiu extrair os valores detalhados. Se a nota contém esses valores, insira-os abaixo.")
-        
-        icms_val = str(impostos_data.get('valor_total_icms', 0.0))
-        ipi_val = str(impostos_data.get('valor_total_ipi', 0.0))
-        pis_val = str(impostos_data.get('valor_total_pis', 0.0))
-        cofins_val = str(impostos_data.get('valor_total_cofins', 0.0))
-
-        col_edit_icms, col_edit_ipi, col_edit_pis, col_edit_cofins = st.columns(4)
-        
-        # Usando chaves para garantir que os inputs sejam independentes
-        key_suffix = source.lower().replace("/", "_")
-        
-        icms_manual = col_edit_icms.text_input("ICMS", value=icms_val, key=f"manual_icms_{key_suffix}")
-        ipi_manual = col_edit_ipi.text_input("IPI", value=ipi_val, key=f"manual_ipi_{key_suffix}")
-        pis_manual = col_edit_pis.text_input("PIS", value=pis_val, key=f"manual_pis_{key_suffix}")
-        cofins_manual = col_edit_cofins.text_input("COFINS", value=cofins_val, key=f"manual_cofins_{key_suffix}")
-        
-        try:
-            # Atualiza o data_dict para o download
-            data_dict['totais_impostos']['valor_total_icms'] = float(icms_manual.replace(",", "."))
-            data_dict['totais_impostos']['valor_total_ipi'] = float(ipi_manual.replace(",", "."))
-            data_dict['totais_impostos']['valor_total_pis'] = float(pis_manual.replace(",", "."))
-            data_dict['totais_impostos']['valor_total_cofins'] = float(cofins_manual.replace(",", "."))
-            st.success("Valores de impostos atualizados para o JSON de download.")
-            
-        except ValueError:
-            st.error("Por favor, insira apenas números válidos nos campos de edição.")
-
-    # 8. Botão de Download
-    st.markdown("---")
-    
-    try:
-        nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
-    except (KeyError, IndexError, TypeError):
-        nome_curto = "extraida"
-
-    json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
-    st.download_button(
-        label="⬇️ Baixar JSON COMPLETO da Extração",
-        data=json_data,
-        file_name=f"nf_{data_dict['data_emissao']}_{nome_curto}.json",
-        mime="application/json"
-    )
-
-    with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
-         st.json(data_dict)
-
-
-# --- Configuração da Interface Streamlit ---
-st.set_page_config(page_title="Extrator Autonometa", layout="wide")
-st.title("🤖 Extrator Autonometa (OCR/XML + LLM) de Notas Fiscais")
-st.markdown("---")
-
-# --- Logo na Sidebar ---
-st.sidebar.image("https://i.imgur.com/oH1wbZ4.png")
-
-# --- 1. Botão de Carregamento na Sidebar ---
-st.sidebar.header("Upload da Nota Fiscal (1/2)")
-
-uploaded_file = st.sidebar.file_uploader(
-    "Escolha a Nota Fiscal (JPG, PNG, PDF ou XML):",
-    type=['png', 'jpg', 'jpeg', 'pdf', 'xml']
-)
-
-parser = PydanticOutputParser(pydantic_object=NotaFiscal)
-
-
-if uploaded_file is not None:
-    
-    file_type = uploaded_file.type
-    # Reseta os estados de processamento
-    st.session_state["extracted_data_xml"] = None 
-    st.session_state["xml_processed"] = False
-    
-    # --- NOVO: PROCESSAMENTO DE XML (PRIORITÁRIO) ---
-    if "xml" in file_type or uploaded_file.name.lower().endswith('.xml'):
-        st.sidebar.success("Arquivo XML detectado.")
-        
-        try:
-            # Lê o conteúdo como string
-            uploaded_file.seek(0)
-            xml_content = uploaded_file.getvalue().decode('utf-8')
-            
-            with st.spinner("Analisando e estruturando dados do XML..."):
-                # Chama a nova função de parsing
-                xml_data_dict = parse_xml_nfe(xml_content)
-                
-                # Validação Pydantic para garantir que o XML segue o schema
-                NotaFiscal(**xml_data_dict)
-                
-                st.session_state["extracted_data_xml"] = xml_data_dict
-                st.session_state["xml_processed"] = True # Sinaliza sucesso
-            
-            st.sidebar.info("Dados extraídos diretamente do XML com sucesso!")
-            
-            # Chama a exibição imediata
-            display_extraction_results(xml_data_dict, source="XML")
-
-        except Exception as e:
-            st.error(f"Erro ao processar o arquivo XML. O arquivo pode estar malformado ou não seguir o schema NF-e. Detalhes: {e}")
-            st.session_state["xml_processed"] = False
-            
-    # --- PROCESSAMENTO DE IMAGEM/PDF (OCR + LLM) ---
-    else:
-        # 1. Executa a extração do texto bruto (OCR)
-        with st.spinner("Extraindo texto bruto da nota fiscal (OCR)..."):
-            ocr_text = extract_text_from_file(uploaded_file)
-            
-        st.session_state["ocr_text"] = ocr_text
-    
-        # --- 2. Miniatura da Imagem na Sidebar ---
-        if "image_to_display" in st.session_state:
-            st.sidebar.success("Imagem carregada e OCR inicial concluído.")
-            with st.sidebar.expander("🔎 Visualizar Nota Fiscal"):
-                st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", use_container_width=True)
+    import cv2, tempfile
+    qualities, improved_flags, texts = [], [], []
+    for p in pages:
+        img = load_image(p)
+        q = assess_image_quality(img); qualities.append(q)
+        if q["quality_score"] < 0.7:
+            img = enhance_image(img); improved_flags.append(True)
         else:
-            # Exibir erro de OCR na sidebar se houver
-            if "ERRO" in st.session_state.get("ocr_text", ""):
-                st.sidebar.error(f"Erro no OCR: {st.session_state['ocr_text']}")
-            else:
-                st.sidebar.info("Arquivo PDF processado. Clique para continuar.")
-        
+            improved_flags.append(False)
+        tmp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        cv2.imwrite(tmp_img.name, img)
+        texts.append(run_ocr(tmp_img.name))
 
-        # 3. Próxima Etapa: Botão de Interpretação LLM 
-        if "ERRO" not in st.session_state.get("ocr_text", ""):
-            st.subheader("Interpretação de Dados Estruturados (2/2)")
-            
-            if st.session_state.get("llm_ready", False):
-                if st.button("🚀 Interpretar Dados Estruturados com o Agente Gemini", key="run_extraction_btn"):
-                    st.session_state["run_llm_extraction"] = True
-                    st.rerun()
-            else:
-                st.error("⚠️ O Agente Gemini não está pronto. Verifique sua `google_api_key`.")
+    merged_text = "\n\n".join(texts)
+    parsed = parse_text(merged_text)
+    parsed.setdefault("metadados", {})
+    parsed["metadados"]["layout"] = parsed["metadados"].get("layout") or detect_layout(merged_text)
+    parsed["metadados"]["ocr_chars"] = len(merged_text); parsed["metadados"]["pages"] = len(pages)
 
+    nf, warns = validate_to_model(parsed)
+    if qualities:
+        qm = {k: sum(q[k] for q in qualities)/len(qualities) for k in ["width","height","sharpness","contrast","quality_score"]}
+    else:
+        qm = {"width":0,"height":0,"sharpness":0,"contrast":0,"quality_score":0}
 
-# --- Seção de Execução da Extração (LLM - Execução Inline) ---
-if st.session_state.get("run_llm_extraction", False) and st.session_state.get("llm_ready", False):
-    
-    st.session_state["run_llm_extraction"] = False 
-    
-    text_to_analyze = st.session_state.get("ocr_text", "")
-    response = None 
-    
-    if not text_to_analyze or "ERRO" in text_to_analyze:
-        st.error("Não há texto válido para enviar ao Agente LLM.")
-        st.stop()
+    return {"nota_fiscal": nf.dict(), "qualidade_media": qm, "paginas": len(pages),
+            "melhorada_em_quais": improved_flags, "avisos": warns, "instrucoes_qualidade": quality_guidance(qm)}
 
-    # Início do bloco de execução original do LLM
-    try:
-        with st.spinner("⏳ O Agente Gemini está interpretando o texto (o tempo de resposta é de aproximadamente 1 minuto)..."):
-            
-            # 2. Criando o Prompt de Extração de Texto (Prompt Atualizado)
-            prompt_template = ChatPromptTemplate.from_messages(
-                [
-                    ("system", 
-                        "Você é um agente de extração de dados fiscais. Sua tarefa é analisar o texto bruto de uma nota fiscal e extrair TODAS as informações solicitadas no formato JSON. "
-                        "Instruções Específicas: Garanta a extração do campo `natureza_operacao` e da `chave_acesso`. "
-                        "ATENÇÃO HÍBRIDA: Para o Valor Aproximado dos Tributos, primeiro tente preencher o campo `valor_aprox_tributos` DENTRO DE CADA ITEM. Se essa informação estiver ausente na tabela de itens, procure o valor TOTAL no campo de 'Dados Adicionais' e preencha o campo `totais_impostos.valor_aprox_tributos`."
-                        "Converta todos os valores monetários e numéricos para float. Não invente dados."
-                    ),
-                    
-                    ("human", (
-                        "Analise o texto a seguir e extraia os campos fiscais na estrutura JSON. "
-                        "Instrução Fiscal Crítica: Priorize a extração do valor de tributos item por item. Se não houver, extraia o total dos tributos do campo de Dados Adicionais."
-                        "Obrigatório: extraia a lista de itens APENAS DA TABELA PRINCIPAL.\n\n"
-                        "INSTRUÇÕES DE FORMATO:\n"
-                        "{format_instructions}\n\n"
-                        "TEXTO BRUTO DA NOTA:\n"
-                        "{text_to_analyze}"
-                    )),
-                ]
-            )
-            
-            prompt_values = prompt_template.partial(
-                format_instructions=parser.get_format_instructions()
-            )
-            
-            final_prompt = prompt_values.format_messages(text_to_analyze=text_to_analyze)
+def quality_guidance(q):
+    tips = []
+    if q.get("quality_score", 0) < 0.7:
+        tips.append("A imagem está com qualidade baixa. Ilumine melhor e evite sombras.")
+        tips.append("Apoie o celular, centralize a nota e mantenha a câmera paralela ao documento.")
+        tips.append("Use resolução adequada (mín. ~1024x768) ou 300 DPI em PDF.")
+    return tips
 
-            # 3. Execução do LLM
-            response = llm.invoke(final_prompt)
-            extracted_data = parser.parse(response.content)
-            
-        # CHAMA A FUNÇÃO DE DISPLAY APÓS SUCESSO DO LLM
-        data_dict = extracted_data.model_dump()
-        display_extraction_results(data_dict, source="LLM/OCR")
-        # Fim do bloco de sucesso do LLM
+def _safe_float(x):
+    try: return float(x)
+    except: return None
 
-    except ValidationError as ve:
-        st.error("Houve um erro de validação (Pydantic). O Gemini pode ter retornado um JSON malformado.")
-        if response is not None:
-            with st.expander("Ver Resposta Bruta do LLM (JSON malformado)", expanded=True):
-                st.code(response.content, language='json')
-        st.warning(f"Detalhes do Erro: {ve}")
+def audit_nota(nf):
+    issues = []
+    emit = nf.get("emitente", {}) or {}
+    dest = nf.get("destinatario", {}) or {}
+    itens = nf.get("itens", []) or []
+    imp = nf.get("impostos", {}) or {}
+    meta = nf.get("metadados", {}) or {}
 
-    except Exception as e:
-        st.error(f"Houve um erro geral durante a interpretação pelo Gemini. Detalhes: {e}")
-        if 'response' in locals() and response is not None:
-            with st.expander("Ver Resposta Bruta do LLM (Debugging)", expanded=True):
-                st.code(response.content, language='json')
-        
-st.markdown("---")
+    if not emit.get("nome"): issues.append("Emitente sem nome.")
+    if not dest.get("nome"): issues.append("Destinatário sem nome.")
+
+    cfops = set(); ncms = set()
+    for i, it in enumerate(itens, 1):
+        if not it.get("descricao"): issues.append(f"Item {i} sem descrição.")
+        if it.get("cfop"): cfops.add(str(it.get("cfop")))
+        if it.get("ncm"): ncms.add(str(it.get("ncm")))
+    if not cfops: issues.append("Nenhum CFOP identificado.")
+    if not ncms: issues.append("Nenhum NCM identificado.")
+
+    soma_itens = sum([_safe_float(i.get("valor_total")) or 0 for i in itens])
+    total_nf = _safe_float(meta.get("total_nf"))
+    if total_nf is not None and abs(soma_itens - total_nf) > 0.05:
+        issues.append(f"Soma de itens ({soma_itens:.2f}) diverge do total da NF ({total_nf:.2f}).")
+
+    for k in ["icms","ipi","pis","cofins"]:
+        v = imp.get(k)
+        if v is not None:
+            try: float(v)
+            except: issues.append(f"Imposto '{k}' com formato inválido: {v}")
+
+    return {"inconsistencias": issues, "resumo": {"qtd_itens": len(itens), "soma_itens": round(soma_itens,2),
+            "total_nf": total_nf, "cfops": sorted(list(cfops)), "ncms": sorted(list(ncms))}}
+
+def aggregate_results(results):
+    total_notas = len(results); total_valor = 0.0; total_itens = 0
+    total_icms = total_ipi = total_pis = total_cofins = 0.0; problemas = 0
+    for r in results:
+        nf = r.get("nota_fiscal", {})
+        meta = nf.get("metadados", {}) or {}
+        imp = nf.get("impostos", {}) or {}
+        total_itens += len(nf.get("itens", []) or [])
+        try: total_valor += float(meta.get("total_nf") or 0)
+        except: pass
+        for k in ["icms","ipi","pis","cofins"]:
+            try:
+                v = float(imp.get(k) or 0)
+                if k=='icms': total_icms+=v
+                elif k=='ipi': total_ipi+=v
+                elif k=='pis': total_pis+=v
+                elif k=='cofins': total_cofins+=v
+            except: pass
+        rep = audit_nota(nf)
+        if rep["inconsistencias"]: problemas += 1
+    return {"total_documentos": total_notas, "total_itens": total_itens, "valor_total": round(total_valor,2),
+            "impostos_total": {"icms": round(total_icms,2), "ipi": round(total_ipi,2), "pis": round(total_pis,2), "cofins": round(total_cofins,2)},
+            "documentos_com_problemas": problemas}
+
+def export_pdf_resumo(nota, path):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import cm
+    c = canvas.Canvas(path, pagesize=A4); w, h = A4; y = h - 2*cm
+    c.setFont("Helvetica-Bold", 14); c.drawString(2*cm, y, "Resumo Fiscal — AutonoMeta"); y -= 1*cm
+    c.setFont("Helvetica", 10)
+    def line(txt):
+        nonlocal y; c.drawString(2*cm, y, (txt or "")[:110]); y -= 0.6*cm
+        if y < 2*cm: c.showPage(); y = h - 2*cm
+    line(f"Emitente: {nota.get('emitente',{}).get('nome')}  CNPJ: {nota.get('emitente',{}).get('cnpj')}")
+    line(f"Destinatário: {nota.get('destinatario',{}).get('nome')}  CNPJ/CPF: {nota.get('destinatario',{}).get('cnpj')}")
+    mt = nota.get('metadados',{})
+    line(f"Itens: {len(nota.get('itens', []))}  Total NF: {mt.get('total_nf')}  Layout: {mt.get('layout')}")
+    imp = nota.get('impostos',{})
+    line(f"ICMS: {imp.get('icms')}  IPI: {imp.get('ipi')}  PIS: {imp.get('pis')}  COFINS: {imp.get('cofins')}")
+    line("Itens (descrição / NCM / CFOP / vTotal):")
+    for it in nota.get('itens', [])[:40]:
+        line(f" - {it.get('descricao')} | NCM {it.get('ncm')} | CFOP {it.get('cfop')} | vTot {it.get('valor_total')}")
+    c.save()
+
+def export_pdf_auditoria(nota, path):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import cm
+    c = canvas.Canvas(path, pagesize=A4); w, h = A4; y = h - 2*cm
+    c.setFont("Helvetica-Bold", 14); c.drawString(2*cm, y, "Relatório de Auditoria Fiscal"); y -= 1*cm
+    c.setFont("Helvetica", 10)
+    aud = audit_nota(nota)
+    def line(txt):
+        nonlocal y; c.drawString(2*cm, y, (txt or "")[:110]); y -= 0.6*cm
+        if y < 2*cm: c.showPage(); y = h - 2*cm
+    line(f"Emitente: {nota.get('emitente',{}).get('nome')}  CNPJ: {nota.get('emitente',{}).get('cnpj')}")
+    line(f"Itens: {aud['resumo']['qtd_itens']}  Soma itens: {aud['resumo']['soma_itens']}  Total NF: {aud['resumo']['total_nf']}")
+    line(f"CFOPs: {', '.join(aud['resumo']['cfops'])}")
+    line(f"NCMs: {', '.join(aud['resumo']['ncms'])}")
+    line("Inconsistências:")
+    incs = aud["inconsistencias"] or ["Nenhuma inconsistência detectada."]
+    for inc in incs: line(f"- {inc}")
+    c.save()
+
+def _run_streamlit_app():
+    import streamlit as st
+    from datetime import datetime
+    import matplotlib.pyplot as plt
+    from collections import Counter
+    import csv, json, io
+
+    st.set_page_config(page_title="AutonoMeta Extrator — Unificado", layout="wide", initial_sidebar_state="expanded")
+    st.sidebar.title("AutonoMeta Extrator — Unificado")
+    st.sidebar.caption("OCR + NLP + XML + Auditoria")
+    st.sidebar.divider()
+    st.sidebar.text_input("GOOGLE_API_KEY (opcional)", type="password", key="GOOGLE_API_KEY")
+    st.sidebar.info("Sem chave, o parser usa heurística.")
+    st.title("🧾 Extração de Dados Fiscais")
+    st.write("Envie XML, PDF (multi-página) ou imagem.")
+
+    uploaded = st.file_uploader("Arraste / clique (vários arquivos)", type=["xml","pdf","png","jpg","jpeg","tiff"], accept_multiple_files=True)
+
+    def kpi_row(nota):
+        total_nf = nota.get("metadados", {}).get("total_nf")
+        imp = nota.get("impostos", {})
+        c1,c2,c3,c4 = st.columns(4)
+        c1.metric("Valor Total (NF)", f"{total_nf if total_nf is not None else '-'}")
+        c2.metric("ICMS", f"{imp.get('icms','-')}")
+        c3.metric("IPI", f"{imp.get('ipi','-')}")
+        c4.metric("Itens", f"{len(nota.get('itens', []))}")
+
+    def charts(nota):
+        ncms = [i.get("ncm") for i in nota.get("itens", []) if i.get("ncm")]
+        if ncms:
+            cnt = Counter(ncms); labels, vals = zip(*cnt.items())
+            fig = plt.figure(); plt.bar(labels, vals); plt.title("Itens por NCM"); st.pyplot(fig)
+        cfops = [i.get("cfop") for i in nota.get("itens", []) if i.get("cfop")]
+        if cfops:
+            cnt = Counter(cfops); labels, vals = zip(*cnt.items())
+            fig = plt.figure(); plt.bar(labels, vals); plt.title("Itens por CFOP"); st.pyplot(fig)
+
+    results = []
+    if uploaded:
+        with st.spinner("Processando lote..."):
+            for up in uploaded:
+                tmp = f"/tmp/auto_{datetime.utcnow().timestamp():.0f}_{up.name}"
+                with open(tmp, "wb") as f: f.write(up.read())
+                res = process_document(tmp)
+                results.append({"arquivo": up.name, **res})
+        st.success(f"Processamento concluído ({len(results)} docs).")
+
+        agg = aggregate_results(results)
+        st.subheader("📊 Consolidado do Lote")
+        c1,c2,c3,c4,c5 = st.columns(5)
+        c1.metric("Documentos", agg["total_documentos"])
+        c2.metric("Valor Total", f'{agg["valor_total"]:.2f}')
+        c3.metric("Itens", agg["total_itens"])
+        c4.metric("Docs com Problemas", agg["documentos_com_problemas"])
+        c5.metric("ICMS Total", f'{agg["impostos_total"]["icms"]:.2f}')
+
+        st.markdown("---")
+        st.subheader("📄 Detalhes por Documento")
+        for r in results:
+            with st.expander(f'{r["arquivo"]} — {r["nota_fiscal"].get("emitente",{}).get("nome","(emitente desconhecido)")}'):
+                st.json(r["nota_fiscal"])
+                kpi_row(r["nota_fiscal"])
+                charts(r["nota_fiscal"])
+
+                colx, coly, colz, colw = st.columns(4)
+                if colx.button(f"💾 Exportar JSON — {r['arquivo']}", key=f"json_{r['arquivo']}"):
+                    st.download_button("Baixar JSON", data=json.dumps(r["nota_fiscal"], ensure_ascii=False, indent=2), file_name=f"{r['arquivo']}.json", mime="application/json")
+                if coly.button(f"📑 Exportar CSV (itens) — {r['arquivo']}", key=f"csv_{r['arquivo']}"):
+                    buf = io.StringIO()
+                    writer = csv.DictWriter(buf, fieldnames=["descricao","ncm","cfop","quantidade","valor_unitario","valor_total"])
+                    writer.writeheader()
+                    for it in r["nota_fiscal"].get("itens", []):
+                        writer.writerow({k: it.get(k) for k in ["descricao","ncm","cfop","quantidade","valor_unitario","valor_total"]})
+                    st.download_button("Baixar CSV", data=buf.getvalue().encode("utf-8"), file_name=f"{r['arquivo']}_itens.csv", mime="text/csv")
+                if colz.button(f"📄 Resumo Fiscal (PDF) — {r['arquivo']}", key=f"resumo_{r['arquivo']}"):
+                    pdf_path = f"/tmp/resumo_{r['arquivo']}.pdf"
+                    export_pdf_resumo(r["nota_fiscal"], pdf_path)
+                    with open(pdf_path, "rb") as fh:
+                        st.download_button("Baixar Resumo (PDF)", data=fh.read(), file_name=f"Resumo_{r['arquivo']}.pdf", mime="application/pdf")
+                if colw.button(f"🧪 Auditoria (PDF) — {r['arquivo']}", key=f"audit_{r['arquivo']}"):
+                    pdf_path = f"/tmp/auditoria_{r['arquivo']}.pdf"
+                    export_pdf_auditoria(r["nota_fiscal"], pdf_path)
+                    with open(pdf_path, "rb") as fh:
+                        st.download_button("Baixar Auditoria (PDF)", data=fh.read(), file_name=f"Auditoria_{r['arquivo']}.pdf", mime="application/pdf")
+
+def _run_cli(argv):
+    if len(argv) < 2:
+        print("Uso: python extrator_unificado.py <arquivo.xml|pdf|imagem>"); sys.exit(1)
+    path = argv[1]; out = process_document(path)
+    print(json.dumps(out["nota_fiscal"], ensure_ascii=False, indent=2))
+
+if __name__ == "__main__":
+    if os.environ.get("STREAMLIT_EXECUTION_CONTEXT"):
+        pass
+    elif "streamlit" in sys.argv[0].lower():
+        pass
+    elif len(sys.argv) > 1:
+        _run_cli(sys.argv)
+    else:
+        try:
+            import streamlit as st  # noqa
+            _run_streamlit_app()
+        except Exception:
+            print("Instale streamlit para a UI ou forneça um arquivo como argumento para modo CLI.")
