@@ -704,7 +704,7 @@ if not st.session_state.get("llm_ready"):
 st.sidebar.image("https://i.imgur.com/oH1wbZ4.png")
 
 # --- 1. Botão de Carregamento na Sidebar ---
-st.sidebar.header("Upload da Nota Fiscal (1/2)")
+st.sidebar.header("Upload da Nota Fiscal")
 
 uploaded_file = st.sidebar.file_uploader(
     "Escolha a Nota Fiscal (JPG, PNG, PDF ou XML):",
