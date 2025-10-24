@@ -7,3 +7,8 @@ langchain-core
 langchain
 langchain-google-genai
 pydantic
+pandas
+plotly
+PyMuPDF
+opencv-python-headless
+numpy
