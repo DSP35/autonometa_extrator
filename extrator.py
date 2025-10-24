@@ -693,9 +693,15 @@ st.title("Análise e Extração Estruturada de Dados 🧠")
 if not st.session_state.get("llm_ready"):
     st.error("⚠️ Erro: A chave 'google_api_key' não foi encontrada nos secrets do Streamlit. O Extrator de PDF/Imagem (LLM/OCR) está desativado. Apenas a extração de XML está funcional.")
 
-uploaded_file = st.file_uploader(
-    "📥 Escolha um arquivo (XML, PDF, PNG, JPG) para análise",
-    type=["xml", "pdf", "png", "jpg", "jpeg"]
+# --- Logo na Sidebar ---
+st.sidebar.image("https://i.imgur.com/oH1wbZ4.png")
+
+# --- 1. Botão de Carregamento na Sidebar ---
+st.sidebar.header("Upload da Nota Fiscal (1/2)")
+
+uploaded_file = st.sidebar.file_uploader(
+    "Escolha a Nota Fiscal (JPG, PNG, PDF ou XML):",
+    type=['png', 'jpg', 'jpeg', 'pdf', 'xml']
 )
 
 if uploaded_file is not None:
