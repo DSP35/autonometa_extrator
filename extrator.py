@@ -311,19 +311,18 @@ def extract_text_from_file(uploaded_file):
     return "ERRO_FALHA_GERAL: Falha desconhecida na extração de texto."
 
 # --- Função de Enriquecimento e Pós-Validação ---
-def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> dict:
+def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> tuple[dict, list]:
     """
     1. Executa fallback heurístico (Regex) para CFOP/CST/CSOSN em itens.
     2. Executa pós-validação comparando o total de itens com o total da nota.
+    Retorna o dicionário enriquecido e uma lista de mensagens para exibição.
     """
-    
-    st.markdown("---")
-    st.subheader("🛠️ Enriquecimento e Auditoria Pós-Extração")
     
     enriched_data = data_dict.copy()
     itens_processados = []
     total_itens_calculado = 0.0
-
+    messages = [] # Lista de mensagens de auditoria para retorno
+    
     # Padrões de Regex (CFOP e CST/CSOSN)
     # CFOP: 4 dígitos obrigatórios (Ex: 5102)
     cfop_pattern = re.compile(r'\b(\d{4})\b')
@@ -332,10 +331,7 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> dict:
     
     # 1. Fallback Heurístico (Regex) para Itens
     if ocr_text:
-        st.info("Iniciando enriquecimento heurístico para códigos fiscais (CFOP, CST/CSOSN).")
-        
-        # O OCR do Tesseract com PSM 4 geralmente coloca a tabela de itens em blocos
-        # Vamos tentar encontrar os padrões no texto bruto para cada item
+        messages.append(("info", "Iniciando enriquecimento heurístico para códigos fiscais (CFOP, CST/CSOSN)."))
         
         for item in enriched_data.get('itens', []):
             item_desc_lower = item['descricao'].lower()
@@ -355,7 +351,7 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> dict:
                 match = cfop_pattern.search(item_desc_lower)
                 if match:
                     item['codigo_cfop'] = match.group(1)
-                    st.success(f"✅ CFOP do item '{item['descricao'][:20]}...' preenchido via Regex: **{item['codigo_cfop']}**")
+                    messages.append(("success", f"✅ CFOP do item '{item['descricao'][:20]}...' preenchido via Regex: **{item['codigo_cfop']}**"))
 
 
             # Fallback para CST/CSOSN
@@ -364,7 +360,7 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> dict:
                 match = cst_pattern.search(item_desc_lower)
                 if match:
                     item['cst_csosn'] = match.group(1)
-                    st.success(f"✅ CST/CSOSN do item '{item['descricao'][:20]}...' preenchido via Regex: **{item['cst_csosn']}**")
+                    messages.append(("success", f"✅ CST/CSOSN do item '{item['descricao'][:20]}...' preenchido via Regex: **{item['cst_csosn']}**"))
 
             itens_processados.append(item)
     
@@ -374,23 +370,22 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> dict:
     
     # 2. Pós-validação de Totais
     
-    st.markdown("---")
-    st.info("Iniciando pós-validação de consistência de totais.")
+    messages.append(("info", "Iniciando pós-validação de consistência de totais."))
     
     valor_total_nota = enriched_data.get('valor_total_nota', 0.0)
     
     # Tolerância de 0.01 centavo (floating point errors)
     tolerance = 0.01 
     
+    soma_itens_formatada = formatar_moeda_imp(total_itens_calculado)
+    total_nf_formatado = formatar_moeda_imp(valor_total_nota)
+
     if abs(total_itens_calculado - valor_total_nota) <= tolerance:
-        st.success("👍 **Consistência Aprovada!** O somatório dos itens é consistente com o Valor Total da Nota.")
-        st.caption(f"Soma dos Itens: {formatar_moeda_imp(total_itens_calculado)} | Total NF: {formatar_moeda_imp(valor_total_nota)}")
+        messages.append(("success", f"👍 **Consistência Aprovada!** O somatório dos itens é consistente com o Valor Total da Nota. | Soma dos Itens: {soma_itens_formatada} | Total NF: {total_nf_formatado}"))
     else:
-        st.error("🚨 **ALERTA DE INCONSISTÊNCIA!** O somatório dos itens extraídos é diferente do Valor Total da Nota extraído.")
-        st.caption(f"Soma dos Itens: {formatar_moeda_imp(total_itens_calculado)} | Total NF: {formatar_moeda_imp(valor_total_nota)}")
-        st.warning("Recomendação: Verifique a qualidade do OCR ou edite os valores manualmente.")
+        messages.append(("error", f"🚨 **ALERTA DE INCONSISTÊNCIA!** O somatório dos itens extraídos é diferente do Valor Total da Nota extraído. | Soma dos Itens: {soma_itens_formatada} | Total NF: {total_nf_formatado} | Recomendação: Verifique a qualidade do OCR ou edite os valores manualmente."))
         
-    return enriched_data
+    return enriched_data, messages
 
 # --- Função Auxiliar: Checagem de Brilho ---
 def get_image_brightness(image_np):
@@ -472,11 +467,26 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     # 1. Pós-validação (Reaproveitando a chamada para exibir os alertas do Ponto 3)
     # A validação e o enriquecimento precisam ser feitos primeiro
     if source == "LLM/OCR" and ocr_text:
-        # Re-executa o enriquecimento do Ponto 3 para garantir que os alertas sejam exibidos
-        data_dict = enrich_and_validate_extraction(data_dict, ocr_text) 
+        # PONTO CHAVE: Recebe o dicionário enriquecido E a lista de mensagens de auditoria
+        data_dict, audit_messages = enrich_and_validate_extraction(data_dict, ocr_text) 
         
-    st.markdown("---")
-    
+        st.markdown("---")
+        st.subheader("🛠️ Enriquecimento e Auditoria Pós-Extração")
+        
+        # Itera sobre as mensagens e as exibe APENAS UMA VEZ
+        for msg_type, msg_text in audit_messages:
+            # Renderiza as mensagens usando os comandos Streamlit corretos e ícones
+            if msg_type == "info":
+                st.info(msg_text)
+            elif msg_type == "success":
+                st.success(msg_text, icon="✔")
+            elif msg_type == "error":
+                st.error(msg_text, icon="❌")
+            else:
+                 st.markdown(msg_text)
+
+        st.markdown("---")
+        
     # 2. Checagem de Qualidade (Ponto 3)
     quality_warnings = check_for_missing_data(data_dict)
     
