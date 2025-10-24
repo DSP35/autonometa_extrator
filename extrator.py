@@ -239,51 +239,66 @@ def extract_text_from_file(uploaded_file):
     """
     Processa o arquivo carregado (JPG/PNG ou PDF) e retorna o texto extraído
     usando Tesseract OCR, com pré-processamento do OpenCV.
+    Se for PDF multipágina, concatena o texto de todas as páginas.
     """
     file_type = uploaded_file.type
     uploaded_file.seek(0)
     
     tesseract_config = '--psm 4' 
     
-    # Inicializa img_for_ocr como None
-    img_for_ocr = None
+    # Lista para armazenar o texto de cada página
+    full_text_list = []
+    
+    # Lista de imagens a serem processadas
+    images_to_process = []
     img_to_display = None
     
-    # 1. Se for PDF
+    # 1. Se for PDF (Múltiplas páginas)
     if "pdf" in file_type:
         try:
-            # Converte apenas a primeira página
-            images = convert_from_bytes(uploaded_file.read(), first_page=1, last_page=1)
-            if not images:
+            # Converte TODAS as páginas (last_page=1 foi removido)
+            images_to_process = convert_from_bytes(uploaded_file.read())
+            
+            if not images_to_process:
                 return "ERRO_CONVERSAO: Não foi possível converter o PDF em imagem."
             
-            img_to_display = images[0]
+            # Armazena apenas a primeira imagem para visualização na sidebar
+            img_to_display = images_to_process[0]
             
         except Exception as e:
             return f"ERRO_PDF: Verifique se 'poppler-utils' está instalado via packages.txt. Detalhes: {e}"
 
-    # 2. Se for Imagem
+    # 2. Se for Imagem (Página única)
     elif "image" in file_type:
         try:
             img_to_display = Image.open(uploaded_file)
+            images_to_process.append(img_to_display)
         except Exception as e:
             return f"ERRO_IMAGEM: Falha na abertura da imagem. Detalhes: {e}"
             
     else:
         return "ERRO_TIPO_INVALIDO: Tipo de arquivo não suportado."
     
-    # --- NOVO: PRÉ-PROCESSAMENTO (Se a imagem foi gerada/aberta) ---
-    if img_to_display:
+    # --- PROCESSAMENTO ITERATIVO (OCR + PRÉ-PROCESSAMENTO) ---
+    if images_to_process:
         try:
-            # A imagem binarizada do OpenCV é enviada para o Tesseract
-            img_for_ocr = preprocess_image_for_ocr(img_to_display)
+            for i, image_pil in enumerate(images_to_process):
+                # 1. Pré-processamento (OpenCV)
+                # A checagem de qualidade/alerta é feita na primeira página
+                img_for_ocr = preprocess_image_for_ocr(image_pil)
+                
+                # 2. Executa o OCR no array numpy processado
+                text = pytesseract.image_to_string(img_for_ocr, lang='por', config=tesseract_config)
+                
+                # Adiciona o texto com um separador
+                full_text_list.append(f"\n--- INÍCIO PÁGINA {i+1} ---\n\n" + text)
             
-            # Executa o OCR no array numpy processado
-            text = pytesseract.image_to_string(img_for_ocr, lang='por', config=tesseract_config) 
+            # Salva a primeira imagem para exibição na sidebar (se não for nula)
+            if img_to_display is not None:
+                st.session_state["image_to_display"] = img_to_display 
             
-            # Salva a imagem original para exibição na sidebar
-            st.session_state["image_to_display"] = img_to_display 
-            return text
+            # Retorna o texto concatenado
+            return "\n".join(full_text_list)
 
         except pytesseract.TesseractNotFoundError:
             return "ERRO_IMAGEM: O Tesseract não está instalado corretamente via packages.txt."
@@ -439,7 +454,7 @@ def display_extraction_results(data_dict: dict, source: str):
                 "valor_aprox_tributos": st.column_config.NumberColumn("V. Aprox. Tributos", format="R$ %.2f")
             },
             hide_index=True,
-            use_container_width=True
+            width='stretch'
         )
     else:
         st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
@@ -600,7 +615,7 @@ if uploaded_file is not None:
         if "image_to_display" in st.session_state:
             st.sidebar.success("Imagem carregada e OCR inicial concluído.")
             with st.sidebar.expander("🔎 Visualizar Nota Fiscal"):
-                st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", use_container_width=True)
+                st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", width='stretch')
         else:
             # Exibir erro de OCR na sidebar se houver
             if "ERRO" in st.session_state.get("ocr_text", ""):
