@@ -520,7 +520,9 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     col_data.metric("Data de Emissão", data_dict['data_emissao'])
     col_valor.metric("Valor Total da Nota", formatar_moeda_imp(data_dict.get('valor_total_nota', 0.0)).replace("R$ ", ""))
     col_modelo.metric("Modelo Fiscal", data_dict['modelo_documento'])
-    col_natureza.metric("Natureza da Operação", data_dict['natureza_operacao'])
+    with col_natureza:
+        st.markdown("**Natureza da Operação**")
+        st.info(data_dict['natureza_operacao'])
 
 
     st.markdown("---")
