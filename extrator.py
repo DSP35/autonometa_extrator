@@ -66,7 +66,7 @@ def reset_application():
         del st.session_state["image_to_display"]
         
     # Força um novo upload e reinício
-    st.experimental_rerun()
+    st.rerun()
 
 if "processed_data" not in st.session_state:
     st.session_state["processed_data"] = None
