@@ -638,6 +638,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
                 return float(str(value).replace(',', '.').strip() or 0.0)
             except:
                 return 0.0
+        
         elif selected_chart == 'Proporção de Custos':
             
         # 1. Valor dos Produtos (Base)
