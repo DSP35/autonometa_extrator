@@ -59,15 +59,6 @@ if "google_api_key" in st.secrets:
 else:
     st.session_state["llm_ready"] = False
 
-def reset_application():
-    """Função que limpa o cache e reinicia a aplicação."""
-    # Limpa o estado da sessão (se necessário, como a imagem de visualização)
-    if "image_to_display" in st.session_state:
-        del st.session_state["image_to_display"]
-        
-    # Força um novo upload e reinício
-    st.rerun()
-
 if "processed_data" not in st.session_state:
     st.session_state["processed_data"] = None
 
@@ -756,8 +747,12 @@ uploaded_file = st.sidebar.file_uploader(
     type=['png', 'jpg', 'jpeg', 'pdf', 'xml']
 )
 
-if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", use_container_width=True):
-    reset_application()
+if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", type='primary', use_container_width=True):
+    st.session_state["processed_data"] = None
+    if "image_to_display" in st.session_state:
+        del st.session_state["image_to_display"]
+        
+    st.rerun() # Força o reinício
 
 if uploaded_file is not None:
 
