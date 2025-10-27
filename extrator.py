@@ -179,7 +179,7 @@ def extract_text_from_file(uploaded_file):
     file_type = uploaded_file.type
     uploaded_file.seek(0)
 
-    tesseract_config = '--oem 1 --psm 6'
+    tesseract_config = '--oem 1 --psm 4'
 
     full_text_list = []
     images_to_process = []
@@ -583,34 +583,105 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             width='stretch'
         )
 
-        st.markdown("### 📈 Distribuição de Valor por CFOP")
+        # --- NOVO: Seleção de Gráficos e Renderização ---
+        st.markdown("### 📊 Análise de Agrupamento")
         
-        # 1. Preparação dos dados para o agrupamento
-        df_cfop_process = df_itens[['codigo_cfop', 'valor_total']].copy()
-        
-        # 2. Garante que CFOP é string e trata nulos/vazios
-        df_cfop_process['CFOP'] = df_cfop_process['codigo_cfop'].astype(str).str.strip().replace(['nan', '', 'None'], 'SEM CFOP')
-
-        # 3. Garante que Valor Total é float
-        df_cfop_process['Valor Total'] = df_cfop_process['valor_total'].astype(float)
-
-        # 4. Agrupa e soma por CFOP
-        df_cfop = df_cfop_process.groupby('CFOP', dropna=False)['Valor Total'].sum().reset_index()
-
-        # 5. Geração do gráfico de barras (O Plotly não fará evolução aqui)
-        fig = px.bar(
-            df_cfop,
-            x='CFOP',
-            y='Valor Total',
-            text='Valor Total',
-            labels={'Valor Total': 'Valor Total (R$)', 'CFOP': 'Código Fiscal de Operações'},
-            color='CFOP',
-            title='Valor de Produtos/Serviços agrupado por CFOP'
+        selected_chart = st.radio(
+            "Escolha o Tipo de Análise:", 
+            ('CFOP (Valor)', 'Proporção de Custos', 'Valor por Item'), 
+            horizontal=True,
+            key='chart_selector' # Adiciona uma chave para evitar problemas de estado
         )
-        fig.update_xaxes(type='category')
-        fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
-        fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
-        st.plotly_chart(fig, use_container_width=True)
+        
+        # ----------------------------------------------------
+        # GRÁFICO 1: CFOP (Valor Total)
+        # ----------------------------------------------------
+        if selected_chart == 'CFOP (Valor)':
+            
+            # 1. Agrupamento
+            df_cfop_process = df_itens[['codigo_cfop', 'valor_total']].copy()
+            # Garante que CFOP é string e trata nulos/vazios
+            df_cfop_process['CFOP'] = df_cfop_process['codigo_cfop'].astype(str).str.strip().replace(['nan', '', 'None', ''], 'SEM CFOP')
+            df_cfop = df_cfop_process.groupby('CFOP', dropna=False)['valor_total'].sum().reset_index()
+            df_cfop.columns = ['CFOP', 'Valor Total']
+            
+            # 2. Criação do Gráfico
+            fig = px.bar(
+                df_cfop, 
+                x='CFOP', 
+                y='Valor Total', 
+                text='Valor Total',
+                labels={'Valor Total': 'Valor Total (R$)', 'CFOP': 'Código Fiscal de Operações'},
+                color='CFOP',
+                title='Valor de Produtos/Serviços agrupado por CFOP'
+            )
+            
+            # CORREÇÃO DEFINITIVA DO EIXO X
+            fig.update_xaxes(type='category') 
+
+            fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
+            fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
+            st.plotly_chart(fig, use_container_width=True)
+
+
+        # ----------------------------------------------------
+        # GRÁFICO 2: Proporção de Custos (Rosca/Pie)
+        # ----------------------------------------------------
+        elif selected_chart == 'Proporção de Custos':
+            
+            # Cálculo dos componentes de custo (impostos_data já está disponível no escopo)
+            total_produtos = df_itens['valor_total'].sum()
+            # Soma dos impostos mais comuns destacados (ICMS e IPI)
+            total_icms_ipi = impostos_data.get('valor_total_icms', 0.0) + impostos_data.get('valor_total_ipi', 0.0)
+            total_outras_despesas = impostos_data.get('valor_outras_despesas', 0.0)
+            
+            # Cria DataFrame para o gráfico de rosca
+            df_custos = pd.DataFrame({
+                'Componente': ['Valor dos Produtos/Serviços', 'Impostos Destacados (ICMS/IPI)', 'Outras Despesas (Frete/Seguro)'],
+                'Valor': [total_produtos, total_icms_ipi, total_outras_despesas]
+            })
+            
+            # Filtra componentes com valor zero para não poluir o gráfico
+            df_custos = df_custos[df_custos['Valor'] > 0.01]
+            
+            fig = px.pie(
+                df_custos,
+                names='Componente',
+                values='Valor',
+                title='Composição do Valor Total da Nota',
+                hole=.4  # Gráfico de Rosca (Donut)
+            )
+            
+            fig.update_traces(textinfo='percent+label', marker=dict(line=dict(color='#000000', width=1)))
+            fig.update_layout(showlegend=True)
+            st.plotly_chart(fig, use_container_width=True)
+
+        
+        # ----------------------------------------------------
+        # GRÁFICO 3: Valor por Item (Top 10)
+        # ----------------------------------------------------
+        elif selected_chart == 'Valor por Item':
+            
+            # Agrupa por descrição, caso haja itens duplicados, e pega os 10 maiores
+            df_item_val = df_itens.groupby('descricao')['valor_total'].sum().reset_index()
+            df_item_val.columns = ['Descrição', 'Valor Total']
+            df_item_val = df_item_val.sort_values(by='Valor Total', ascending=False).head(10)
+
+            fig = px.bar(
+                df_item_val, 
+                x='Valor Total', 
+                y='Descrição', 
+                orientation='h',
+                text='Valor Total',
+                labels={'Valor Total': 'Valor Total (R$)', 'Descrição': 'Produto/Serviço'},
+                color='Descrição',
+                title='Top 10 Produtos/Serviços por Valor Total'
+            )
+            
+            fig.update_traces(texttemplate='R$ %{x:,.2f}', textposition='outside')
+            fig.update_layout(yaxis={'categoryorder':'total ascending'}, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+
     else:
         st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
 
