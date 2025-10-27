@@ -629,16 +629,33 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
         # ----------------------------------------------------
         elif selected_chart == 'Proporção de Custos':
             
-            # Cálculo dos componentes de custo (impostos_data já está disponível no escopo)
-            total_produtos = df_itens['valor_total'].sum()
-            # Soma dos impostos mais comuns destacados (ICMS e IPI)
-            total_icms_ipi = impostos_data.get('valor_total_icms', 0.0) + impostos_data.get('valor_total_ipi', 0.0)
+            # IMPEDINDO ERRO: Garante que a soma é 0.0 se o DF de itens for vazio
+            total_produtos = df_itens['valor_total'].sum() if not df_itens.empty else 0.0 
+            
+            # Os impostos devem ser extraídos da estrutura de totais da nota
+            # (impostos_data já está disponível no escopo)
+            
+            # Impostos Destacados: ICMS + IPI + PIS + COFINS
+            total_impostos = (
+                impostos_data.get('valor_total_icms', 0.0) +
+                impostos_data.get('valor_total_ipi', 0.0) +
+                impostos_data.get('valor_total_pis', 0.0) +
+                impostos_data.get('valor_total_cofins', 0.0)
+            )
+            
+            # Outras Despesas (Inclui Frete, Seguro, Outras Despesas Acessórias)
             total_outras_despesas = impostos_data.get('valor_outras_despesas', 0.0)
+            
+            # O Valor Total da Nota é a soma destes componentes mais o Valor dos Produtos/Serviços.
             
             # Cria DataFrame para o gráfico de rosca
             df_custos = pd.DataFrame({
-                'Componente': ['Valor dos Produtos/Serviços', 'Impostos Destacados (ICMS/IPI)', 'Outras Despesas (Frete/Seguro)'],
-                'Valor': [total_produtos, total_icms_ipi, total_outras_despesas]
+                'Componente': [
+                    'Valor dos Produtos/Serviços', 
+                    'Impostos Destacados (ICMS, IPI, PIS, COFINS)', 
+                    'Outras Despesas/Frete/Seguro'
+                ],
+                'Valor': [total_produtos, total_impostos, total_outras_despesas]
             })
             
             # Filtra componentes com valor zero para não poluir o gráfico
