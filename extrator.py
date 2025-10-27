@@ -432,6 +432,16 @@ def enrich_and_validate_extraction(data_dict: dict, ocr_text: str) -> tuple[dict
     return enriched_data, messages
 
 
+# Função Auxiliar para conversão
+def safe_float(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        # Tenta converter strings, substituindo vírgulas (se for o caso) e tratando vazios
+        return float(str(value).replace(',', '.').strip() or 0.0)
+    except:
+        return 0.0
+
 # =======================================================================
 # --- 4. CONFIGURAÇÃO LLM E PROMPT ---
 # =======================================================================
@@ -629,16 +639,6 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
         # ----------------------------------------------------
         # GRÁFICO 2: Proporção de Custos (Rosca/Pie)
         # ----------------------------------------------------
-        # Função Auxiliar para conversão
-        def safe_float(value):
-            if isinstance(value, (int, float)):
-                return float(value)
-            try:
-                # Tenta converter strings, substituindo vírgulas (se for o caso) e tratando vazios
-                return float(str(value).replace(',', '.').strip() or 0.0)
-            except:
-                return 0.0
-        
         elif selected_chart == 'Proporção de Custos':
             
         # 1. Valor dos Produtos (Base)
