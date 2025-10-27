@@ -62,6 +62,9 @@ else:
 if "processed_data" not in st.session_state:
     st.session_state["processed_data"] = None
 
+if "last_uploaded_id" not in st.session_state:
+    st.session_state["last_uploaded_id"] = None
+
 if "file_uploader_key_id" not in st.session_state:
     st.session_state["file_uploader_key_id"] = 0
 
@@ -869,6 +872,13 @@ if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", type='primary', use_
 
 if uploaded_file is not None:
 
+    uploaded_file_identifier = uploaded_file.name + str(uploaded_file.size)
+
+    if st.session_state.get("last_uploaded_id") != uploaded_file_identifier:
+        # Se o identificador mudou, limpamos os dados processados para forçar novo processamento
+        st.session_state["processed_data"] = None
+        st.session_state["last_uploaded_id"] = uploaded_file_identifier # Atualiza o ID
+        
     # 1. FLUXO DE EXIBIÇÃO: Se os dados já foram processados e estão no estado, exiba-os imediatamente.
     if st.session_state["processed_data"] is not None:
         data_dict = st.session_state["processed_data"]
