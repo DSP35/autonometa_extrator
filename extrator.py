@@ -59,6 +59,19 @@ if "google_api_key" in st.secrets:
 else:
     st.session_state["llm_ready"] = False
 
+def reset_application():
+    """Função que limpa o cache e reinicia a aplicação."""
+    # Limpa o estado da sessão (se necessário, como a imagem de visualização)
+    if "image_to_display" in st.session_state:
+        del st.session_state["image_to_display"]
+        
+    # Força um novo upload e reinício
+    st.experimental_rerun()
+
+st.sidebar.markdown("---")
+if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", use_container_width=True):
+    reset_application()
+st.sidebar.markdown("---")
 
 # =======================================================================
 # --- 2. DEFININDO OS SCHEMAS DE SAÍDA (ESTRUTURAS PYDANTIC) ---
@@ -506,7 +519,6 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     total_icms = impostos_data.get('valor_total_icms', 0.0)
     total_ipi = impostos_data.get('valor_total_ipi', 0.0)
 
-    # RECONFIGURAÇÃO DOS KPIs - REMOVEMOS O KPI DE INCONSISTÊNCIAS JÁ QUE ESTÁ ACIMA
     kpi1, kpi2, kpi3, kpi4 = st.columns(4) # De 5 colunas para 4
 
     kpi1.metric("Valor Total da NF", formatar_moeda_imp(valor_total).replace("R$ ", ""))
@@ -659,35 +671,39 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
 
     # 9. Botões de Download (JSON e CSV)
     st.markdown("---")
-    col_json_btn, col_csv_btn = st.columns(2)
+    
+    with st.form(key='download_form'):
+        st.subheader("⬇️ Downloads")
+        
+        col_json_btn, col_csv_btn = st.columns(2)
 
-    try:
-        nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
-        data_emissao_nome = data_dict['data_emissao']
-    except (KeyError, IndexError, TypeError):
-        nome_curto = "extraida"
-        data_emissao_nome = "data_desconhecida"
+        try:
+            nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
+            data_emissao_nome = data_dict['data_emissao']
+        except (KeyError, IndexError, TypeError):
+            nome_curto = "extraida"
+            data_emissao_nome = "data_desconhecida"
 
-    json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
-    col_json_btn.download_button(
-        label="⬇️ Baixar JSON COMPLETO da Extração",
-        data=json_data,
-        file_name=f"nf_{data_emissao_nome}_{nome_curto}.json",
-        mime="application/json",
-        use_container_width=True
-    )
-
-    if not df_itens.empty:
-        # 1. Renomeação das Colunas para Nomes Amigáveis (Português)
-        df_csv = df_itens.rename(columns={
-            "descricao": "Descricao_Produto",
-            "quantidade": "Quantidade",
-            "valor_unitario": "Valor_Unitario",
-            "valor_total": "Valor_Total_Item",
-            "codigo_cfop": "CFOP",
-            "cst_csosn": "CST_CSOSN",
-            "valor_aprox_tributos": "Valor_Aprox_Tributos"
-        })
+        json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
+        col_json_btn.download_button(
+            label="⬇️ Baixar JSON COMPLETO da Extração",
+            data=json_data,
+            file_name=f"nf_{data_emissao_nome}_{nome_curto}.json",
+            mime="application/json",
+            use_container_width=True
+        )
+    
+        if not df_itens.empty:
+            # 1. Renomeação das Colunas para Nomes Amigáveis (Português)
+            df_csv = df_itens.rename(columns={
+                "descricao": "Descricao_Produto",
+                "quantidade": "Quantidade",
+                "valor_unitario": "Valor_Unitario",
+                "valor_total": "Valor_Total_Item",
+                "codigo_cfop": "CFOP",
+                "cst_csosn": "CST_CSOSN",
+                "valor_aprox_tributos": "Valor_Aprox_Tributos"
+            })
 
         # 2. Formatação dos Valores Financeiros/Decimais para Padrão Brasileiro (ponto -> vírgula)
         cols_para_formatar = ["Quantidade", "Valor_Unitario", "Valor_Total_Item", "Valor_Aprox_Tributos"]
@@ -711,7 +727,8 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             mime="text/csv",
             use_container_width=True
         )
-
+    st.form_submit_button(label='Download Completo', disabled=True, type='secondary')
+    
     with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
          st.json(data_dict)
 
@@ -726,7 +743,14 @@ if not st.session_state.get("llm_ready"):
     st.error("⚠️ Erro: A chave 'google_api_key' não foi encontrada nos secrets do Streamlit. O Extrator de PDF/Imagem (LLM/OCR) está desativado. Apenas a extração de XML está funcional.")
 
 # --- Logo na Sidebar ---
-st.sidebar.image("https://i.imgur.com/oH1wbZ4.png")
+st.sidebar.markdown(
+    """
+    <div style="text-align: center;">
+        <img src="https://i.imgur.com/oH1wbZ4.png" width="150">
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # --- 1. Botão de Carregamento na Sidebar ---
 st.sidebar.header("Upload da Nota Fiscal")
