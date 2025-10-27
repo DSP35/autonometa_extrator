@@ -68,10 +68,8 @@ def reset_application():
     # Força um novo upload e reinício
     st.experimental_rerun()
 
-st.sidebar.markdown("---")
-if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", use_container_width=True):
-    reset_application()
-st.sidebar.markdown("---")
+if "processed_data" not in st.session_state:
+    st.session_state["processed_data"] = None
 
 # =======================================================================
 # --- 2. DEFININDO OS SCHEMAS DE SAÍDA (ESTRUTURAS PYDANTIC) ---
@@ -672,63 +670,61 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     # 9. Botões de Download (JSON e CSV)
     st.markdown("---")
     
-    with st.form(key='download_form'):
-        st.subheader("⬇️ Downloads")
-        
-        col_json_btn, col_csv_btn = st.columns(2)
-
-        try:
-            nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
-            data_emissao_nome = data_dict['data_emissao']
-        except (KeyError, IndexError, TypeError):
-            nome_curto = "extraida"
-            data_emissao_nome = "data_desconhecida"
-
-        json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
-        col_json_btn.download_button(
-            label="⬇️ Baixar JSON COMPLETO da Extração",
-            data=json_data,
-            file_name=f"nf_{data_emissao_nome}_{nome_curto}.json",
-            mime="application/json",
-            use_container_width=True
-        )
+    st.subheader("⬇️ Downloads")
     
-        if not df_itens.empty:
-            # 1. Renomeação das Colunas para Nomes Amigáveis (Português)
-            df_csv = df_itens.rename(columns={
-                "descricao": "Descricao_Produto",
-                "quantidade": "Quantidade",
-                "valor_unitario": "Valor_Unitario",
-                "valor_total": "Valor_Total_Item",
-                "codigo_cfop": "CFOP",
-                "cst_csosn": "CST_CSOSN",
-                "valor_aprox_tributos": "Valor_Aprox_Tributos"
-            })
+    col_json_btn, col_csv_btn = st.columns(2)
 
-        # 2. Formatação dos Valores Financeiros/Decimais para Padrão Brasileiro (ponto -> vírgula)
-        cols_para_formatar = ["Quantidade", "Valor_Unitario", "Valor_Total_Item", "Valor_Aprox_Tributos"]
+    try:
+        nome_curto = data_dict['emitente']['nome_razao'].split(' ')[0]
+        data_emissao_nome = data_dict['data_emissao']
+    except (KeyError, IndexError, TypeError):
+        nome_curto = "extraida"
+        data_emissao_nome = "data_desconhecida"
 
-        for col in cols_para_formatar:
-            # Converte float para string no formato brasileiro com duas casas decimais
-            df_csv[col] = df_csv[col].apply(lambda x: f"{x:.2f}".replace('.', ','))
+    json_data = json.dumps(data_dict, ensure_ascii=False, indent=4)
+    col_json_btn.download_button(
+        label="⬇️ Baixar JSON COMPLETO da Extração",
+        data=json_data,
+        file_name=f"nf_{data_emissao_nome}_{nome_curto}.json",
+        mime="application/json",
+        use_container_width=True
+    )
 
-        # 3. Geração do CSV no formato brasileiro (separador de ponto e vírgula)
-        # Usamos 'sep=;' para evitar conflito com a vírgula decimal e adicionamos BOM para compatibilidade com Excel.
-        csv_data = df_csv.to_csv(
-            index=False,
-            sep=';',
-            encoding='utf-8-sig' # Adiciona Byte Order Mark para compatibilidade com Excel em PT
-        )
+    if not df_itens.empty:
+        # 1. Renomeação das Colunas para Nomes Amigáveis (Português)
+        df_csv = df_itens.rename(columns={
+            "descricao": "Descricao_Produto",
+            "quantidade": "Quantidade",
+            "valor_unitario": "Valor_Unitario",
+            "valor_total": "Valor_Total_Item",
+            "codigo_cfop": "CFOP",
+            "cst_csosn": "CST_CSOSN",
+            "valor_aprox_tributos": "Valor_Aprox_Tributos"
+        })
 
-        col_csv_btn.download_button(
-            label="⬇️ Baixar Itens em CSV (Formato ABNT)",
-            data=csv_data,
-            file_name=f"itens_{data_emissao_nome}_{nome_curto}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    st.form_submit_button(label='Download Completo', disabled=True, type='secondary')
-    
+    # 2. Formatação dos Valores Financeiros/Decimais para Padrão Brasileiro (ponto -> vírgula)
+    cols_para_formatar = ["Quantidade", "Valor_Unitario", "Valor_Total_Item", "Valor_Aprox_Tributos"]
+
+    for col in cols_para_formatar:
+        # Converte float para string no formato brasileiro com duas casas decimais
+        df_csv[col] = df_csv[col].apply(lambda x: f"{x:.2f}".replace('.', ','))
+
+    # 3. Geração do CSV no formato brasileiro (separador de ponto e vírgula)
+    # Usamos 'sep=;' para evitar conflito com a vírgula decimal e adicionamos BOM para compatibilidade com Excel.
+    csv_data = df_csv.to_csv(
+        index=False,
+        sep=';',
+        encoding='utf-8-sig' # Adiciona Byte Order Mark para compatibilidade com Excel em PT
+    )
+
+    col_csv_btn.download_button(
+        label="⬇️ Baixar Itens em CSV (Formato ABNT)",
+        data=csv_data,
+        file_name=f"itens_{data_emissao_nome}_{nome_curto}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
     with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
          st.json(data_dict)
 
@@ -760,73 +756,98 @@ uploaded_file = st.sidebar.file_uploader(
     type=['png', 'jpg', 'jpeg', 'pdf', 'xml']
 )
 
+if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", use_container_width=True):
+    reset_application()
+
 if uploaded_file is not None:
 
-    file_type = uploaded_file.type
+    # 1. FLUXO DE EXIBIÇÃO: Se os dados já foram processados e estão no estado, exiba-os imediatamente.
+    if st.session_state["processed_data"] is not None:
+        data_dict = st.session_state["processed_data"]
+        source = st.session_state["processed_source"]
+        ocr_text = st.session_state.get("ocr_text", None) # Pega o OCR text se existir
 
-    with st.spinner(f"Processando arquivo ({uploaded_file.name})..."):
+        # Exibe os resultados sem re-processar
+        display_extraction_results(data_dict, source=source, ocr_text=ocr_text)
 
-        # --- FLUXO 1: XML (Prioridade Máxima) ---
-        if "xml" in file_type:
-            uploaded_file.seek(0)
-            xml_content = uploaded_file.read().decode('utf-8')
-            data_dict = parse_xml_nfe(xml_content)
+    # 2. FLUXO DE PROCESSAMENTO: Se o arquivo foi carregado mas os dados AINDA NÃO estão no estado.
+    elif st.session_state["processed_data"] is None:
+        
+        file_type = uploaded_file.type
 
-            if "error" in data_dict:
-                st.error(data_dict["error"])
+        with st.spinner(f"Processando arquivo ({uploaded_file.name})..."):
+
+            # --- FLUXO 1: XML (Prioridade Máxima) ---
+            if "xml" in file_type:
+                uploaded_file.seek(0)
+                xml_content = uploaded_file.read().decode('utf-8')
+                data_dict = parse_xml_nfe(xml_content)
+
+                if "error" in data_dict:
+                    st.error(data_dict["error"])
+                else:
+                    try:
+                        NotaFiscal(**data_dict)
+                        
+                        # NOVO: SALVA NO ESTADO APÓS SUCESSO
+                        st.session_state["processed_data"] = data_dict
+                        st.session_state["processed_source"] = "XML"
+                        
+                        display_extraction_results(data_dict, source="XML")
+                    except ValidationError as ve:
+                        st.error(f"Erro de Validação Pydantic ao ler XML: {ve}")
+                        st.info("O XML foi processado, mas falhou na validação do esquema Pydantic. Use o JSON Bruto para debug.")
+                        display_extraction_results(data_dict, source="XML")
+
+            # --- FLUXO 2: OCR/LLM (PDF/Imagem) ---
+            elif st.session_state.get("llm_ready"):
+
+                # 1. Extração de texto bruto (OCR)
+                text_to_analyze = extract_text_from_file(uploaded_file)
+                response = None
+
+                if text_to_analyze.startswith("ERRO_"):
+                     st.error(f"Erro na extração de texto (OCR): {text_to_analyze}")
+                     st.markdown("Verifique se as dependências (poppler-utils, tesseract) estão instaladas corretamente.")
+                else:
+                    # 2. Miniatura da Imagem na Sidebar
+                    if "image_to_display" in st.session_state:
+                        st.sidebar.success("Imagem carregada e OCR inicial concluído.")
+                        with st.sidebar.expander("🔎 Visualizar Nota Fiscal"):
+                            st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", width='stretch')
+
+                    try:
+                        # 3. Execução do LLM
+                        final_prompt = prompt.format(text_to_analyze=text_to_analyze)
+                        response = llm.invoke(final_prompt)
+                        extracted_data = parser.parse(response.content)
+
+                        # 4. Pós-processamento e Enriquecimento
+                        data_dict = extracted_data.model_dump()
+
+                        # NOVO: SALVA NO ESTADO APÓS SUCESSO
+                        st.session_state["processed_data"] = data_dict
+                        st.session_state["processed_source"] = "LLM/OCR"
+                        st.session_state["ocr_text"] = text_to_analyze # Salva o OCR text
+
+                        # 5. CHAMA A FUNÇÃO DE DISPLAY
+                        display_extraction_results(data_dict, source="LLM/OCR", ocr_text=text_to_analyze)
+
+                    except ValidationError as ve:
+                        st.error("Houve um erro de validação (Pydantic). O Gemini pode ter retornado um JSON malformado.")
+                        if response is not None:
+                            with st.expander("Ver Resposta Bruta do LLM (JSON malformado)", expanded=True):
+                                st.code(response.content, language='json')
+                        st.warning(f"Detalhes do Erro: {ve}")
+
+                    except Exception as e:
+                        st.error(f"Houve um erro geral durante a interpretação pelo Gemini. Detalhes: {e}")
+                        if 'response' in locals() and response is not None:
+                             with st.expander("Ver Resposta Bruta do LLM", expanded=False):
+                                st.code(response.content, language='text')
+                        with st.expander("Ver Texto OCR Bruto"):
+                            st.code(text_to_analyze, language="text")
             else:
-                try:
-                    NotaFiscal(**data_dict)
-                    display_extraction_results(data_dict, source="XML")
-                except ValidationError as ve:
-                    st.error(f"Erro de Validação Pydantic ao ler XML: {ve}")
-                    st.info("O XML foi processado, mas falhou na validação do esquema Pydantic. Use o JSON Bruto para debug.")
-                    display_extraction_results(data_dict, source="XML")
-
-        # --- FLUXO 2: OCR/LLM (PDF/Imagem) ---
-        elif st.session_state.get("llm_ready"):
-
-            # 1. Extração de texto bruto (OCR)
-            text_to_analyze = extract_text_from_file(uploaded_file)
-            response = None
-
-            if text_to_analyze.startswith("ERRO_"):
-                 st.error(f"Erro na extração de texto (OCR): {text_to_analyze}")
-                 st.markdown("Verifique se as dependências (poppler-utils, tesseract) estão instaladas corretamente.")
-            else:
-                # 2. Miniatura da Imagem na Sidebar
-                if "image_to_display" in st.session_state:
-                    st.sidebar.success("Imagem carregada e OCR inicial concluído.")
-                    with st.sidebar.expander("🔎 Visualizar Nota Fiscal"):
-                        st.image(st.session_state["image_to_display"], caption="Nota Fiscal Processada", width='stretch')
-
-                try:
-                    # 3. Execução do LLM
-                    final_prompt = prompt.format(text_to_analyze=text_to_analyze)
-                    response = llm.invoke(final_prompt)
-                    extracted_data = parser.parse(response.content)
-
-                    # 4. Pós-processamento e Enriquecimento
-                    data_dict = extracted_data.model_dump()
-
-                    # 5. CHAMA A FUNÇÃO DE DISPLAY
-                    display_extraction_results(data_dict, source="LLM/OCR", ocr_text=text_to_analyze)
-
-                except ValidationError as ve:
-                    st.error("Houve um erro de validação (Pydantic). O Gemini pode ter retornado um JSON malformado.")
-                    if response is not None:
-                        with st.expander("Ver Resposta Bruta do LLM (JSON malformado)", expanded=True):
-                            st.code(response.content, language='json')
-                    st.warning(f"Detalhes do Erro: {ve}")
-
-                except Exception as e:
-                    st.error(f"Houve um erro geral durante a interpretação pelo Gemini. Detalhes: {e}")
-                    if 'response' in locals() and response is not None:
-                         with st.expander("Ver Resposta Bruta do LLM", expanded=False):
-                            st.code(response.content, language='text')
-                    with st.expander("Ver Texto OCR Bruto"):
-                        st.code(text_to_analyze, language="text")
-        else:
-            st.warning("O arquivo é uma imagem/PDF, mas o processamento LLM está desativado (sem Google API Key).")
+                st.warning("O arquivo é uma imagem/PDF, mas o processamento LLM está desativado (sem Google API Key).")
             
 # --- Fim do Código ---
