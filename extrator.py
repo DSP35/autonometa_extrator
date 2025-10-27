@@ -678,9 +678,34 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     )
 
     if not df_itens.empty:
-        csv_data = df_itens.to_csv(index=False).encode('utf-8')
+        # 1. Renomeação das Colunas para Nomes Amigáveis (Português)
+        df_csv = df_itens.rename(columns={
+            "descricao": "Descricao_Produto",
+            "quantidade": "Quantidade",
+            "valor_unitario": "Valor_Unitario",
+            "valor_total": "Valor_Total_Item",
+            "codigo_cfop": "CFOP",
+            "cst_csosn": "CST_CSOSN",
+            "valor_aprox_tributos": "Valor_Aprox_Tributos"
+        })
+
+        # 2. Formatação dos Valores Financeiros/Decimais para Padrão Brasileiro (ponto -> vírgula)
+        cols_para_formatar = ["Quantidade", "Valor_Unitario", "Valor_Total_Item", "Valor_Aprox_Tributos"]
+
+        for col in cols_para_formatar:
+            # Converte float para string no formato brasileiro com duas casas decimais
+            df_csv[col] = df_csv[col].apply(lambda x: f"{x:.2f}".replace('.', ','))
+
+        # 3. Geração do CSV no formato brasileiro (separador de ponto e vírgula)
+        # Usamos 'sep=;' para evitar conflito com a vírgula decimal e adicionamos BOM para compatibilidade com Excel.
+        csv_data = df_csv.to_csv(
+            index=False,
+            sep=';',
+            encoding='utf-8-sig' # Adiciona Byte Order Mark para compatibilidade com Excel em PT
+        )
+
         col_csv_btn.download_button(
-            label="⬇️ Baixar Itens em CSV",
+            label="⬇️ Baixar Itens em CSV (Formato ABNT)",
             data=csv_data,
             file_name=f"itens_{data_emissao_nome}_{nome_curto}.csv",
             mime="text/csv",
