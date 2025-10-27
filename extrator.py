@@ -641,72 +641,72 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
         # ----------------------------------------------------
         elif selected_chart == 'Proporção de Custos':
             
-        # 1. Valor dos Produtos (Base)
-        total_produtos = df_itens['valor_total'].sum() if not df_itens.empty else 0.0 
-        
-        # 2. Impostos Destacados (ICMS + IPI + PIS + COFINS)
-        impostos_destacados = (
-            safe_float(impostos_data.get('valor_total_icms')) +
-            safe_float(impostos_data.get('valor_total_ipi')) +
-            safe_float(impostos_data.get('valor_total_pis')) +
-            safe_float(impostos_data.get('valor_total_cofins'))
-        )
-        
-        # 3. Valor Aproximado dos Tributos (Lei da Transparência)
-        valor_aprox_tributos_nota = safe_float(impostos_data.get('valor_aprox_tributos'))
-        
-        # Lógica de Decisão CRÍTICA para Impostos:
-        # Se a soma dos impostos destacados for zero, usamos o valor aproximado.
-        if impostos_destacados < 0.01 and valor_aprox_tributos_nota > 0.01:
-            total_impostos = valor_aprox_tributos_nota
-            imposto_label = 'Impostos (Valor Aproximado da Nota)'
-        else:
-            total_impostos = impostos_destacados
-            imposto_label = 'Impostos Destacados (ICMS, IPI, PIS, COFINS)'
-
-        
-        # 4. Outras Despesas (Frete, Seguro, Outras Despesas Acessórias)
-        total_outras_despesas = (
-            safe_float(impostos_data.get('valor_frete')) +
-            safe_float(impostos_data.get('valor_seguro')) +
-            safe_float(impostos_data.get('valor_outras_despesas'))
-        )
-        
-        # Cria DataFrame para o gráfico de rosca
-        df_custos = pd.DataFrame({
-            'Componente': [
-                'Valor dos Produtos/Serviços', 
-                imposto_label, 
-                'Frete/Seguro/Outras Despesas'
-            ],
-            'Valor': [total_produtos, total_impostos, total_outras_despesas]
-        })
-        
-        # Filtra componentes com valor zero para não poluir o gráfico
-        df_custos = df_custos[df_custos['Valor'].round(2) > 0.01]
-        
-        # Verifica se o Valor Total dos Componentes (que é o que está no gráfico) 
-        # está próximo do Valor Total da Nota, para dar confiança ao usuário
-        valor_total_calculado = df_custos['Valor'].sum()
-        valor_total_nota = safe_float(impostos_data.get('valor_total_nota', 0.0))
-        
-        titulo_grafico = 'Composição do Valor Total da Nota'
-        
-        # Exibe um aviso no título se a soma estiver muito diferente (ajuste fino de centavos é normal)
-        if abs(valor_total_calculado - valor_total_nota) > 1.0:
-             titulo_grafico += f" (Aviso: Soma dos Componentes (R$ {valor_total_calculado:,.2f}) difere do Total da Nota (R$ {valor_total_nota:,.2f}))"
-        
-        fig = px.pie(
-            df_custos,
-            names='Componente',
-            values='Valor',
-            title=titulo_grafico,
-            hole=.4  # Gráfico de Rosca (Donut)
-        )
-        
-        fig.update_traces(textinfo='percent+label', marker=dict(line=dict(color='#000000', width=1)))
-        fig.update_layout(showlegend=True)
-        st.plotly_chart(fig, use_container_width=True)
+            # 1. Valor dos Produtos (Base)
+            total_produtos = df_itens['valor_total'].sum() if not df_itens.empty else 0.0 
+            
+            # 2. Impostos Destacados (ICMS + IPI + PIS + COFINS)
+            impostos_destacados = (
+                safe_float(impostos_data.get('valor_total_icms')) +
+                safe_float(impostos_data.get('valor_total_ipi')) +
+                safe_float(impostos_data.get('valor_total_pis')) +
+                safe_float(impostos_data.get('valor_total_cofins'))
+            )
+            
+            # 3. Valor Aproximado dos Tributos (Lei da Transparência)
+            valor_aprox_tributos_nota = safe_float(impostos_data.get('valor_aprox_tributos'))
+            
+            # Lógica de Decisão CRÍTICA para Impostos:
+            # Se a soma dos impostos destacados for zero, usamos o valor aproximado.
+            if impostos_destacados < 0.01 and valor_aprox_tributos_nota > 0.01:
+                total_impostos = valor_aprox_tributos_nota
+                imposto_label = 'Impostos (Valor Aproximado da Nota)'
+            else:
+                total_impostos = impostos_destacados
+                imposto_label = 'Impostos Destacados (ICMS, IPI, PIS, COFINS)'
+    
+            
+            # 4. Outras Despesas (Frete, Seguro, Outras Despesas Acessórias)
+            total_outras_despesas = (
+                safe_float(impostos_data.get('valor_frete')) +
+                safe_float(impostos_data.get('valor_seguro')) +
+                safe_float(impostos_data.get('valor_outras_despesas'))
+            )
+            
+            # Cria DataFrame para o gráfico de rosca
+            df_custos = pd.DataFrame({
+                'Componente': [
+                    'Valor dos Produtos/Serviços', 
+                    imposto_label, 
+                    'Frete/Seguro/Outras Despesas'
+                ],
+                'Valor': [total_produtos, total_impostos, total_outras_despesas]
+            })
+            
+            # Filtra componentes com valor zero para não poluir o gráfico
+            df_custos = df_custos[df_custos['Valor'].round(2) > 0.01]
+            
+            # Verifica se o Valor Total dos Componentes (que é o que está no gráfico) 
+            # está próximo do Valor Total da Nota, para dar confiança ao usuário
+            valor_total_calculado = df_custos['Valor'].sum()
+            valor_total_nota = safe_float(impostos_data.get('valor_total_nota', 0.0))
+            
+            titulo_grafico = 'Composição do Valor Total da Nota'
+            
+            # Exibe um aviso no título se a soma estiver muito diferente (ajuste fino de centavos é normal)
+            if abs(valor_total_calculado - valor_total_nota) > 1.0:
+                 titulo_grafico += f" (Aviso: Soma dos Componentes (R$ {valor_total_calculado:,.2f}) difere do Total da Nota (R$ {valor_total_nota:,.2f}))"
+            
+            fig = px.pie(
+                df_custos,
+                names='Componente',
+                values='Valor',
+                title=titulo_grafico,
+                hole=.4  # Gráfico de Rosca (Donut)
+            )
+            
+            fig.update_traces(textinfo='percent+label', marker=dict(line=dict(color='#000000', width=1)))
+            fig.update_layout(showlegend=True)
+            st.plotly_chart(fig, use_container_width=True)
 
         
         # ----------------------------------------------------
