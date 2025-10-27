@@ -1,4 +1,4 @@
-# Extrator Autonometa
+# Extrator Autonometa™
 # Desenvolvido por David Parede
 
 import streamlit as st
@@ -480,7 +480,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
 
     st.header(f"✅ Resultado da Extração Estruturada ({source})")
 
-    # 1. Pós-validação (Validação e Enriquecimento - Apenas para LLM/OCR)
+    # 1. Pós-validação
     if source == "LLM/OCR" and ocr_text:
         data_dict, audit_messages = enrich_and_validate_extraction(data_dict, ocr_text)
 
@@ -503,7 +503,6 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     quality_warnings = check_for_missing_data(data_dict)
 
     if quality_warnings:
-        # Usamos uma caixa de erro/aviso que é naturalmente mais visível
         st.error(f"⚠️ Atenção: Foram encontradas **{len(quality_warnings)} informações críticas faltando** ou zeradas na nota fiscal. Verifique a lista abaixo:")
         
         # O expander é forçado a abrir (expanded=True) se houver avisos
@@ -513,9 +512,9 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     else:
         st.success("🎉 Verificação de Qualidade concluída: Nenhuma informação crítica obrigatória faltando (Emitente, Destinatário, Valor, Itens).")
 
-    st.markdown("---") # Separador após a checagem
+    st.markdown("---") 
 
-    # --- 2. DASHBOARD: KPIs e Indicadores ---
+    # 3. DASHBOARD: KPIs e Indicadores 
     st.subheader("📊 Resumo Fiscal (KPIs)")
 
     impostos_data = data_dict.get('totais_impostos', {})
@@ -525,7 +524,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     total_icms = impostos_data.get('valor_total_icms', 0.0)
     total_ipi = impostos_data.get('valor_total_ipi', 0.0)
 
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4) # De 5 colunas para 4
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
     kpi1.metric("Valor Total da NF", formatar_moeda_imp(valor_total).replace("R$ ", ""))
     kpi2.metric("V. Aprox. Tributos", formatar_moeda_imp(total_tributos).replace("R$ ", ""))
@@ -535,7 +534,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     st.markdown("---")
 
 
-    # --- 4. DETALHES GERAIS DA NOTA ---
+    # 4. DETALHES GERAIS DA NOTA 
     st.subheader("Informações Principais")
 
     col_data, col_valor, col_modelo, col_natureza = st.columns(4)
@@ -596,7 +595,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             width='stretch'
         )
 
-        # --- NOVO: Seleção de Gráficos e Renderização ---
+        # Seleção de Gráficos e Renderização 
         st.markdown("### 📊 Análise de Agrupamento")
         
         selected_chart = st.radio(
@@ -655,7 +654,6 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             # 3. Valor Aproximado dos Tributos (Lei da Transparência)
             valor_aprox_tributos_nota = safe_float(impostos_data.get('valor_aprox_tributos'))
             
-            # Lógica de Decisão CRÍTICA para Impostos:
             # Se a soma dos impostos destacados for zero, usamos o valor aproximado.
             if impostos_destacados < 0.01 and valor_aprox_tributos_nota > 0.01:
                 total_impostos = valor_aprox_tributos_nota
@@ -686,7 +684,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             df_custos = df_custos[df_custos['Valor'].round(2) > 0.01]
             
             # Verifica se o Valor Total dos Componentes (que é o que está no gráfico) 
-            # está próximo do Valor Total da Nota, para dar confiança ao usuário
+            # está próximo do Valor Total da Nota
             valor_total_calculado = df_custos['Valor'].sum()
             valor_total_nota = safe_float(impostos_data.get('valor_total_nota', 0.0))
             
@@ -788,7 +786,6 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
         cofins_manual = col_edit_cofins.text_input("COFINS", value=cofins_val, key=f"manual_cofins_{key_suffix}")
 
         try:
-            # Atualiza o data_dict para o download
             data_dict['totais_impostos']['valor_total_icms'] = float(icms_manual.replace(",", "."))
             data_dict['totais_impostos']['valor_total_ipi'] = float(ipi_manual.replace(",", "."))
             data_dict['totais_impostos']['valor_total_pis'] = float(pis_manual.replace(",", "."))
@@ -836,11 +833,10 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
     cols_para_formatar = ["Quantidade", "Valor_Unitario", "Valor_Total_Item", "Valor_Aprox_Tributos"]
 
     for col in cols_para_formatar:
-        # Converte float para string no formato brasileiro com duas casas decimais
+        # Converte float para string no formato com duas casas decimais
         df_csv[col] = df_csv[col].apply(lambda x: f"{x:.2f}".replace('.', ','))
 
     # 3. Geração do CSV no formato brasileiro (separador de ponto e vírgula)
-    # Usamos 'sep=;' para evitar conflito com a vírgula decimal e adicionamos BOM para compatibilidade com Excel.
     csv_data = df_csv.to_csv(
         index=False,
         sep=';',
@@ -867,6 +863,8 @@ st.title("Análise e Extração Estruturada de Dados 🧠")
 
 if not st.session_state.get("llm_ready"):
     st.error("⚠️ Erro: A chave 'google_api_key' não foi encontrada nos secrets do Streamlit. O Extrator de PDF/Imagem (LLM/OCR) está desativado. Apenas a extração de XML está funcional.")
+
+st.sidebar.header("Extrator Autonometa™")
 
 # --- Logo na Sidebar ---
 st.sidebar.markdown(
@@ -907,7 +905,6 @@ if uploaded_file is not None:
     uploaded_file_identifier = uploaded_file.name + str(uploaded_file.size)
 
     if st.session_state.get("last_uploaded_id") != uploaded_file_identifier:
-        # Se o identificador mudou, limpamos os dados processados para forçar novo processamento
         st.session_state["processed_data"] = None
         st.session_state["last_uploaded_id"] = uploaded_file_identifier # Atualiza o ID
         
@@ -939,7 +936,6 @@ if uploaded_file is not None:
                     try:
                         NotaFiscal(**data_dict)
                         
-                        # NOVO: SALVA NO ESTADO APÓS SUCESSO
                         st.session_state["processed_data"] = data_dict
                         st.session_state["processed_source"] = "XML"
                         
