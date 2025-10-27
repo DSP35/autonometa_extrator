@@ -606,6 +606,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             color='CFOP',
             title='Valor de Produtos/Serviços agrupado por CFOP'
         )
+        fig.update_xaxes(type='category')
         fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
         fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
         st.plotly_chart(fig, use_container_width=True)
