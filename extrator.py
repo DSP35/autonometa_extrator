@@ -583,7 +583,18 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
         )
 
         st.markdown("### 📈 Distribuição de Valor por CFOP")
-        df_cfop = df_itens.groupby('codigo_cfop', dropna=False)['valor_total'].sum().reset_index()
+        
+        # Cria uma cópia temporária e garante que o CFOP é string e não tem nulos
+        df_cfop_process = df_itens.copy()
+        
+        # 1. Garante que 'codigo_cfop' é string
+        df_cfop_process['codigo_cfop'] = df_cfop_process['codigo_cfop'].astype(str)
+        
+        # 2. Preenche valores vazios ou nulos com uma categoria explícita
+        df_cfop_process['codigo_cfop'] = df_cfop_process['codigo_cfop'].replace(['nan', '', 'None'], 'SEM CFOP')
+
+        # 3. Agrupa e soma
+        df_cfop = df_cfop_process.groupby('codigo_cfop', dropna=False)['valor_total'].sum().reset_index()
         df_cfop.columns = ['CFOP', 'Valor Total']
 
         fig = px.bar(
