@@ -748,7 +748,13 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", type='primary', use_container_width=True):
-    st.session_state["processed_data"] = None
+    # Lógica de Limpeza Completa
+    if "processed_data" in st.session_state:
+        del st.session_state["processed_data"]
+    if "processed_source" in st.session_state:
+        del st.session_state["processed_source"]
+    if "ocr_text" in st.session_state:
+        del st.session_state["ocr_text"]
     if "image_to_display" in st.session_state:
         del st.session_state["image_to_display"]
         
