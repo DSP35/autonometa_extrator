@@ -62,6 +62,9 @@ else:
 if "processed_data" not in st.session_state:
     st.session_state["processed_data"] = None
 
+if "file_uploader_key_id" not in st.session_state:
+    st.session_state["file_uploader_key_id"] = 0
+
 # =======================================================================
 # --- 2. DEFININDO OS SCHEMAS DE SAÍDA (ESTRUTURAS PYDANTIC) ---
 # =======================================================================
@@ -745,6 +748,7 @@ st.sidebar.header("Upload da Nota Fiscal")
 uploaded_file = st.sidebar.file_uploader(
     "Escolha a Nota Fiscal (JPG, PNG, PDF ou XML):",
     type=['png', 'jpg', 'jpeg', 'pdf', 'xml']
+    key=st.session_state["file_uploader_key_id"]
 )
 
 if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", type='primary', use_container_width=True):
@@ -757,7 +761,9 @@ if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", type='primary', use_
         del st.session_state["ocr_text"]
     if "image_to_display" in st.session_state:
         del st.session_state["image_to_display"]
-        
+
+    st.session_state["file_uploader_key_id"] += 1
+    
     st.rerun() # Força o reinício
 
 if uploaded_file is not None:
