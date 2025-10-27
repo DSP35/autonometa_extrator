@@ -564,7 +564,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
         df_itens = pd.DataFrame(itens_list)
 
         for col in ['quantidade', 'valor_unitario', 'valor_total', 'valor_aprox_tributos']:
-            df_itens[col] = pd.to_numeric(df_itens[col], errors='coerce').fillna(0.0)
+            df_itens[col] = pd.to_numeric(df_itens[col], errors='coerce').fillna(0.0).astype(float)
 
         st.dataframe(
             df_itens,
@@ -584,19 +584,19 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
 
         st.markdown("### 📈 Distribuição de Valor por CFOP")
         
-        # Cria uma cópia temporária e garante que o CFOP é string e não tem nulos
-        df_cfop_process = df_itens.copy()
+        # 1. Preparação dos dados para o agrupamento
+        df_cfop_process = df_itens[['codigo_cfop', 'valor_total']].copy()
         
-        # 1. Garante que 'codigo_cfop' é string
-        df_cfop_process['codigo_cfop'] = df_cfop_process['codigo_cfop'].astype(str)
-        
-        # 2. Preenche valores vazios ou nulos com uma categoria explícita
-        df_cfop_process['codigo_cfop'] = df_cfop_process['codigo_cfop'].replace(['nan', '', 'None'], 'SEM CFOP')
+        # 2. Garante que CFOP é string e trata nulos/vazios
+        df_cfop_process['CFOP'] = df_cfop_process['codigo_cfop'].astype(str).str.strip().replace(['nan', '', 'None'], 'SEM CFOP')
 
-        # 3. Agrupa e soma
-        df_cfop = df_cfop_process.groupby('codigo_cfop', dropna=False)['valor_total'].sum().reset_index()
-        df_cfop.columns = ['CFOP', 'Valor Total']
+        # 3. Garante que Valor Total é float
+        df_cfop_process['Valor Total'] = df_cfop_process['valor_total'].astype(float)
 
+        # 4. Agrupa e soma por CFOP
+        df_cfop = df_cfop_process.groupby('CFOP', dropna=False)['Valor Total'].sum().reset_index()
+
+        # 5. Geração do gráfico de barras (O Plotly não fará evolução aqui)
         fig = px.bar(
             df_cfop,
             x='CFOP',
