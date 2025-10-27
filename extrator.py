@@ -179,7 +179,7 @@ def extract_text_from_file(uploaded_file):
     file_type = uploaded_file.type
     uploaded_file.seek(0)
 
-    tesseract_config = '--psm 4'
+    tesseract_config = '--oem 1 --psm 6'
 
     full_text_list = []
     images_to_process = []
@@ -438,13 +438,14 @@ system_prompt = (
     "Sua função é ler o texto bruto (OCR) de documentos fiscais e extrair os dados em formato JSON, "
     "obedecendo rigorosamente o schema Pydantic fornecido."
     "Siga estas regras estritas:"
-    "1. **Extração de Texto Bruto:** Se um campo estiver faltando ou for ilegível no texto OCR, preencha-o com uma string vazia (''), mas *nunca* invente dados."
-    "2. **Valores Numéricos (CRÍTICO - FORMATO BRASILEIRO):** Converta todos os valores monetários e quantias (que usam ponto como milhar e vírgula como decimal, ex: 1.234,56) para o formato `float` americano (ponto como separador decimal, sem separador de milhar, ex: 1234.56). "
-    "   - **Atenção:** Remova o separador de milhar (ponto ou espaço) e substitua a vírgula (,) pelo ponto (.)."
-    "3. **Datas:** Converta todas as datas para o formato estrito 'AAAA-MM-DD'."
-    "4. **Chave de Acesso:** A chave deve ser uma string de 44 dígitos (apenas números)."
-    "5. **Tabelas de Itens:** Preste **MÁXIMA ATENÇÃO** à leitura correta das colunas. O campo `valor_total` deve ser o **Valor Total do Item/Produto**, e **NÃO** o Valor de ICMS ou outro imposto."
-    "6. **Saída:** O resultado final deve ser **SOMENTE** o JSON, sem qualquer texto explicativo ou markdown adicional."
+    "1. **Correção Ortográfica Contextual (CRÍTICO):** O texto de entrada é gerado por um OCR e contém erros de grafia comuns. Tente corrigir esses erros de grafia na `descricao` do `ItemNota`, usando o contexto do texto e o português correto, antes de incluí-lo no JSON. Caso não consiga inferir qual é a palavra, mantenha o valor original"
+    "2. **Extração de Texto Bruto:** Se um campo estiver faltando ou for ilegível no texto OCR, preencha-o com uma string vazia (''), mas *nunca* invente dados."
+    "3. **Valores Numéricos (CRÍTICO - FORMATO BRASILEIRO):** Converta todos os valores monetários e quantias (que usam ponto como milhar e vírgula como decimal, ex: 1.234,56) para o formato `float` americano (ponto como separador decimal, sem separador de milhar, ex: 1234.56). "
+    "   - **Atenção:** Remova o separador de milhar (punto ou espaço) e substitua a vírgula (,) pelo ponto (.)."
+    "4. **Datas:** Converta todas as datas para o formato estrito 'AAAA-MM-DD'."
+    "5. **Chave de Acesso:** A chave deve ser uma string de 44 dígitos (apenas números)."
+    "6. **Tabelas de Itens:** Preste **MÁXIMA ATENÇÃO** à leitura correta das colunas. O campo `valor_total` deve ser o **Valor Total do Item/Produto**, e **NÃO** o Valor de ICMS ou outro imposto."
+    "7. **Saída:** O resultado final deve ser **SOMENTE** o JSON, sem qualquer texto explicativo ou markdown adicional."
 )
 
 parser = PydanticOutputParser(pydantic_object=NotaFiscal)
