@@ -747,7 +747,7 @@ st.sidebar.header("Upload da Nota Fiscal")
 
 uploaded_file = st.sidebar.file_uploader(
     "Escolha a Nota Fiscal (JPG, PNG, PDF ou XML):",
-    type=['png', 'jpg', 'jpeg', 'pdf', 'xml']
+    type=['png', 'jpg', 'jpeg', 'pdf', 'xml'],
     key=st.session_state["file_uploader_key_id"]
 )
 
