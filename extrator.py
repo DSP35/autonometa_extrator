@@ -67,7 +67,10 @@ if "last_uploaded_id" not in st.session_state:
 
 if "file_uploader_key_id" not in st.session_state:
     st.session_state["file_uploader_key_id"] = 0
-
+    
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+    
 # =======================================================================
 # --- 2. DEFININDO OS SCHEMAS DE SAÍDA (ESTRUTURAS PYDANTIC) ---
 # =======================================================================
@@ -895,6 +898,8 @@ if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", type='primary', use_
         del st.session_state["ocr_text"]
     if "image_to_display" in st.session_state:
         del st.session_state["image_to_display"]
+    if "messages" in st.session_state:
+        st.session_state.messages = []
 
     st.session_state["file_uploader_key_id"] += 1
     
@@ -995,5 +1000,72 @@ if uploaded_file is not None:
                             st.code(text_to_analyze, language="text")
             else:
                 st.warning("O arquivo é uma imagem/PDF, mas o processamento LLM está desativado (sem Google API Key).")
+
+# =======================================================================
+# --- 7. CHATBOT DE CONSULTA CONTEXTUAL --
+# =======================================================================
+
+if st.session_state["processed_data"] is not None:
+    
+    st.markdown("---")
+    st.subheader("🤖 Chatbot de Análise Fiscal (Gemini)")
+    
+    # Prepara o contexto da nota para o Gemini
+    # Usamos o JSON e o Texto OCR Bruto (se disponível) para o contexto.
+    nota_json_str = json.dumps(st.session_state["processed_data"], indent=2, ensure_ascii=False)
+    ocr_text = st.session_state.get("ocr_text", "Texto OCR não disponível.")
+    
+    CONTEXT_PROMPT = f"""
+    Você é um assistente de análise fiscal para o Extrator Autonometa. 
+    Sua única fonte de conhecimento é o documento de Nota Fiscal atual, cujos dados foram extraídos no formato JSON a seguir:
+    --- JSON DA NOTA ---
+    {nota_json_str}
+    ---
+    
+    Responda às perguntas do usuário usando SOMENTE as informações contidas neste JSON ou, se necessário, no texto OCR bruto:
+    --- TEXTO OCR BRUTO ---
+    {ocr_text[:2000]} # Limita o OCR para evitar estouro de token
+    ---
+    
+    Regras estritas:
+    1. Responda apenas com informações que você possa confirmar no JSON ou no Texto OCR.
+    2. Se a informação não estiver na nota, diga educadamente: "Desculpe, essa informação não foi encontrada no documento atual."
+    3. Para perguntas sobre impostos, explique a composição (ICMS, IPI, Frete, etc.) usando os valores exatos do JSON.
+    4. Mantenha a resposta clara e concisa.
+    """
+
+    # Exibe as mensagens históricas
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+    # Captura a nova entrada do usuário
+    if prompt := st.chat_input("Pergunte algo sobre esta nota (Ex: Qual o valor do ICMS? Qual a descrição do item mais caro?):"):
+        
+        # 1. Adiciona a pergunta do usuário
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # 2. Gera a resposta do modelo
+        try:
+            with st.spinner("Analisando o contexto da nota..."):
+                
+                # Combina o prompt contextual e a pergunta do usuário
+                full_prompt = f"{CONTEXT_PROMPT}\n\nPergunta do Usuário: {prompt}"
+                
+                # Execução do LLM (reutilizando a instância LLM da Seção 3)
+                response = llm.invoke(full_prompt)
+                
+                # Formata a resposta
+                formatted_response = response.content
             
+        except Exception as e:
+            formatted_response = f"Ocorreu um erro ao consultar o Gemini: {e}"
+            
+        # 3. Adiciona a resposta do assistente
+        with st.chat_message("assistant"):
+            st.markdown(formatted_response)
+        st.session_state.messages.append({"role": "assistant", "content": formatted_response})
+        
 # --- Fim do Código ---
