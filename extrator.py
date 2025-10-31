@@ -636,7 +636,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
 
             fig.update_traces(texttemplate='R$ %{y:,.2f}', textposition='outside')
             fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         # ----------------------------------------------------
         # GRÁFICO 2: Proporção de Custos (Rosca/Pie)
@@ -707,7 +707,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             
             fig.update_traces(textinfo='percent+label', marker=dict(line=dict(color='#000000', width=1)))
             fig.update_layout(showlegend=True)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         
         # ----------------------------------------------------
@@ -733,7 +733,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
             
             fig.update_traces(texttemplate='R$ %{x:,.2f}', textposition='outside')
             fig.update_layout(yaxis={'categoryorder':'total ascending'}, showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
     else:
         st.warning("Nenhum item ou serviço foi encontrado na nota fiscal.")
@@ -817,7 +817,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
         data=json_data,
         file_name=f"nf_{data_emissao_nome}_{nome_curto}.json",
         mime="application/json",
-        use_container_width=True
+        width='stretch'
     )
 
     if not df_itens.empty:
@@ -851,7 +851,7 @@ def display_extraction_results(data_dict: dict, source: str, ocr_text: Optional[
         data=csv_data,
         file_name=f"itens_{data_emissao_nome}_{nome_curto}.csv",
         mime="text/csv",
-        use_container_width=True
+        width='stretch'
     )
 
     with st.expander("Ver JSON Bruto Completo (DEBUG)", expanded=False):
@@ -888,7 +888,7 @@ uploaded_file = st.sidebar.file_uploader(
     key=st.session_state["file_uploader_key_id"]
 )
 
-if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", type='primary', use_container_width=True):
+if st.sidebar.button("🔄 Iniciar Novo Processo / Limpar", type='primary', width='stretch'):
     # Lógica de Limpeza Completa
     if "processed_data" in st.session_state:
         del st.session_state["processed_data"]
